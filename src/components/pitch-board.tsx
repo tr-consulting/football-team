@@ -123,15 +123,14 @@ function SlotDropZone({
         <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} />
 
         {player ? (
-          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[240px] text-white">
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/72 p-2 shadow-[0_14px_26px_rgba(3,7,18,0.26)] backdrop-blur-sm">
+          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[220px] text-white">
+            <div className="flex items-center justify-between gap-2 rounded-full border border-white/10 bg-slate-950/72 px-3 py-2 shadow-[0_10px_20px_rgba(3,7,18,0.2)] backdrop-blur-sm">
               <button
                 type="button"
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-2 text-[10px] font-semibold tracking-[0.2em] text-white uppercase transition hover:bg-white/10"
+                className="flex-1 text-left text-[10px] font-semibold uppercase tracking-[0.24em] text-white transition hover:text-amber-200"
                 onClick={() => setIsOptionsOpen((value) => !value)}
                 aria-expanded={isOptionsOpen}
               >
-                <Grip size={11} />
                 Flytta
               </button>
               <button
@@ -165,6 +164,9 @@ function SlotDropZone({
 
             {isOptionsOpen ? (
               <div className="mt-2 rounded-[22px] border border-white/10 bg-slate-950/88 p-3 shadow-[0_14px_36px_rgba(3,7,18,0.3)] backdrop-blur-sm">
+                <label className="mb-2 block text-[10px] uppercase tracking-[0.22em] text-white/60">
+                  Byt spelare
+                </label>
                 <select
                   className="w-full rounded-2xl border border-white/12 bg-black/28 px-3 py-2.5 text-xs text-white outline-none"
                   value={slot.playerId ?? ""}
