@@ -11,7 +11,7 @@ type ExportStoryProps = {
 };
 
 function getDepthScale(y: number) {
-  return 0.64 + y / 340;
+  return 0.62 + y / 360;
 }
 
 export function ExportStory({
@@ -147,7 +147,7 @@ export function ExportStory({
                 style={{
                   left: `calc(${slot.x}% + ${slot.manualOffsetX}px)`,
                   top: `calc(${slot.y}% + ${slot.manualOffsetY}px)`,
-                  transform: `translate(-50%, -50%) scale(${scale})`,
+                  transform: `translateY(-50%) scale(${scale})`,
                   transformOrigin: "center bottom",
                   zIndex: Math.round(slot.y * 10),
                 }}
