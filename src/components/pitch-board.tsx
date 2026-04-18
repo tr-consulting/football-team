@@ -206,7 +206,7 @@ export function PitchBoard({
 
       <div className="relative aspect-[5/4] overflow-hidden rounded-[30px] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_32%),linear-gradient(180deg,#111f35_0%,#0c1524_100%)]">
         <div
-          className="absolute inset-x-[6%] bottom-[7%] top-[14%] overflow-hidden [clip-path:polygon(9%_0,91%_0,100%_100%,0_100%)] rounded-[28px] bg-[linear-gradient(180deg,#5cad31_0%,#4e9f2c_18%,#4b942a_40%,#3c7c21_100%)] shadow-[0_36px_60px_rgba(3,10,19,0.5)]"
+          className="absolute inset-x-[6%] bottom-[12%] top-[14%] [clip-path:polygon(9%_0,91%_0,100%_100%,0_100%)] rounded-[28px] bg-[linear-gradient(180deg,#5cad31_0%,#4e9f2c_18%,#4b942a_40%,#3c7c21_100%)] shadow-[0_36px_60px_rgba(3,10,19,0.5)]"
           style={{ transform: "perspective(1000px) rotateX(12deg) rotateZ(-0.4deg)", transformOrigin: "center bottom" }}
         >
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.18),transparent_28%)] opacity-80" />
@@ -228,17 +228,21 @@ export function PitchBoard({
           <div className="absolute left-1/2 bottom-[19%] h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-white/90" />
         </div>
 
-        {slots.map((slot) => (
-          <SlotDropZone
-            key={slot.slotKey}
-            slot={slot}
-            players={players}
-            player={slot.playerId ? playerMap.get(slot.playerId) : undefined}
-            onAssignPlayer={onAssignPlayer}
-            onMoveSlot={onMoveSlot}
-            onResetSlot={onResetSlot}
-          />
-        ))}
+        <div className="absolute inset-x-[6%] bottom-[12%] top-[14%]">
+          {slots.map((slot) => (
+            <SlotDropZone
+              key={slot.slotKey}
+              slot={slot}
+              players={players}
+              player={slot.playerId ? playerMap.get(slot.playerId) : undefined}
+              onAssignPlayer={onAssignPlayer}
+              onMoveSlot={onMoveSlot}
+              onResetSlot={onResetSlot}
+            />
+          ))}
+        </div> />
+          ))}
+        </div>
       </div>
     </div>
   );
