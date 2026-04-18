@@ -65,6 +65,22 @@ export const FORMATION_TEMPLATES: FormationTemplate[] = [
       { slotKey: "st", positionLabel: "ST", x: 50, y: 13 },
     ],
   },
+  {
+    key: "4-3-1",
+    label: "4-3-1",
+    description: "Fyrbackslinje med två defensiva mittfältare och en kreativ tia.",
+    slots: [
+      { slotKey: "gk", positionLabel: "GK", x: 50, y: 91 },
+      { slotKey: "lwb", positionLabel: "LWB", x: 15, y: 65 },
+      { slotKey: "cb-left", positionLabel: "CB", x: 35, y: 68 },
+      { slotKey: "cb-right", positionLabel: "CB", x: 65, y: 68 },
+      { slotKey: "rwb", positionLabel: "RWB", x: 85, y: 65 },
+      { slotKey: "cdm-left", positionLabel: "CDM", x: 35, y: 50 },
+      { slotKey: "cdm-right", positionLabel: "CDM", x: 65, y: 50 },
+      { slotKey: "cam", positionLabel: "CAM", x: 50, y: 32 },
+      { slotKey: "st", positionLabel: "ST", x: 50, y: 13 },
+    ],
+  },
 ];
 
 export const DEFAULT_FORMATION_KEY = FORMATION_TEMPLATES[0].key;
