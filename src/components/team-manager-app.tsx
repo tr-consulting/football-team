@@ -1029,26 +1029,39 @@ export function TeamManagerApp() {
 
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/50">Datum</p>
-                  <p className="mt-3 text-lg font-black uppercase tracking-[0.06em] text-white">
-                    {new Intl.DateTimeFormat("sv-SE", {
-                      dateStyle: "medium",
-                    }).format(new Date(selectedMatch.matchDate))}
-                  </p>
+                  <label className="text-xs uppercase tracking-[0.28em] text-white/50">Datum & Tid</label>
+                  <input
+                    type="datetime-local"
+                    value={selectedMatch.matchDate}
+                    onChange={(event) =>
+                      updateSelectedMatch((match) => ({ ...match, matchDate: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none"
+                  />
                 </div>
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/50">Tid</p>
-                  <p className="mt-3 text-lg font-black uppercase tracking-[0.06em] text-white">
-                    {new Intl.DateTimeFormat("sv-SE", {
-                      timeStyle: "short",
-                    }).format(new Date(selectedMatch.matchDate))}
-                  </p>
+                  <label className="text-xs uppercase tracking-[0.28em] text-white/50">Motståndare</label>
+                  <input
+                    type="text"
+                    value={selectedMatch.opponentName}
+                    onChange={(event) =>
+                      updateSelectedMatch((match) => ({ ...match, opponentName: event.target.value }))
+                    }
+                    placeholder="Motståndare"
+                    className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none placeholder:text-white/35"
+                  />
                 </div>
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/50">Plats</p>
-                  <p className="mt-3 text-lg font-black uppercase tracking-[0.06em] text-white">
-                    {selectedMatch.location}
-                  </p>
+                  <label className="text-xs uppercase tracking-[0.28em] text-white/50">Plats</label>
+                  <input
+                    type="text"
+                    value={selectedMatch.location}
+                    onChange={(event) =>
+                      updateSelectedMatch((match) => ({ ...match, location: event.target.value }))
+                    }
+                    placeholder="Plats"
+                    className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none placeholder:text-white/35"
+                  />
                 </div>
               </div>
             </section>
