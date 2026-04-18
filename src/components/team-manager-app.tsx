@@ -24,6 +24,7 @@ import {
   Plus,
   Shield,
   Sparkles,
+  Trash2,
   Users,
 } from "lucide-react";
 
@@ -460,6 +461,19 @@ export function TeamManagerApp() {
     setPlayerImageFile(null);
   }
 
+  function handleDeletePlayer(playerId: string) {
+    updateState((current) => ({
+      ...current,
+      players: current.players.filter((player) => player.id !== playerId),
+      matches: current.matches.map((match) => removePlayerEverywhere(match, playerId)),
+    }));
+
+    if (playerForm.id === playerId) {
+      setPlayerForm(emptyPlayerForm);
+      setPlayerImageFile(null);
+    }
+  }
+
   function handlePlayerImage(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
@@ -866,36 +880,49 @@ export function TeamManagerApp() {
             <div className="mt-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
               {state.players.length > 0 ? (
                 state.players.map((player) => (
-                  <button
-                    type="button"
+                  <div
                     key={player.id}
-                    className="w-full rounded-[24px] border border-white/10 bg-white/6 p-3 text-left transition hover:bg-white/10"
-                    onClick={() => {
-                      setPlayerForm({
-                        id: player.id,
-                        firstName: player.firstName,
-                        lastName: player.lastName,
-                        number: player.number,
-                        image: player.image,
-                      });
-                      setPlayerImageFile(null);
-                    }}
+                    className="rounded-[24px] border border-white/10 bg-white/6 p-3 transition hover:bg-white/10"
                   >
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.24em] text-amber-100/78">
-                          #{player.number}
-                        </p>
-                        <p className="mt-1 text-lg font-black uppercase tracking-[0.08em] text-white">
-                          {player.lastName}
-                        </p>
-                        <p className="text-sm text-white/62">{player.firstName}</p>
-                      </div>
-                      <div className="w-[118px] shrink-0">
-                        <PlayerCard player={player} positionLabel="Squad" variant="compact" />
-                      </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        className="flex-1 text-left"
+                        onClick={() => {
+                          setPlayerForm({
+                            id: player.id,
+                            firstName: player.firstName,
+                            lastName: player.lastName,
+                            number: player.number,
+                            image: player.image,
+                          });
+                          setPlayerImageFile(null);
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-amber-100/78">
+                              #{player.number}
+                            </p>
+                            <p className="mt-1 text-lg font-black uppercase tracking-[0.08em] text-white">
+                              {player.lastName}
+                            </p>
+                            <p className="text-sm text-white/62">{player.firstName}</p>
+                          </div>
+                          <div className="w-[118px] shrink-0">
+                            <PlayerCard player={player} positionLabel="Squad" variant="compact" />
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex h-11 items-center justify-center rounded-full border border-rose-400/25 bg-rose-400/10 px-3 text-sm font-semibold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-400/20"
+                        onClick={() => handleDeletePlayer(player.id)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
-                  </button>
+                  </div>
                 ))
               ) : (
                 <p className="rounded-[24px] border border-dashed border-white/12 px-4 py-5 text-sm text-white/45">

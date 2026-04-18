@@ -51,6 +51,7 @@ function SlotDropZone({
   const cardRef = useRef<HTMLDivElement | null>(null);
   const dragStateRef = useRef<DragState | null>(null);
   const [isMoving, setIsMoving] = useState(false);
+  const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const depthScale = getDepthScale(slot.y);
 
   useEffect(() => {
@@ -122,11 +123,20 @@ function SlotDropZone({
         <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} />
 
         {player ? (
-          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[240px] rounded-[22px] border border-white/10 bg-slate-950/72 p-2.5 shadow-[0_16px_24px_rgba(3,7,18,0.28)] backdrop-blur-sm">
-            <div className="flex items-center gap-2">
+          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[240px] text-white">
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/72 p-2 shadow-[0_14px_26px_rgba(3,7,18,0.26)] backdrop-blur-sm">
               <button
                 type="button"
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-2 text-[10px] font-semibold tracking-[0.2em] text-white uppercase"
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-2 text-[10px] font-semibold tracking-[0.2em] text-white uppercase transition hover:bg-white/10"
+                onClick={() => setIsOptionsOpen((value) => !value)}
+                aria-expanded={isOptionsOpen}
+              >
+                <Grip size={11} />
+                Flytta
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/6 text-white/75 transition hover:text-white"
                 onPointerDown={(event) => {
                   event.preventDefault();
                   dragStateRef.current = {
@@ -139,13 +149,13 @@ function SlotDropZone({
                   };
                   setIsMoving(true);
                 }}
+                aria-label={`Dra ${slot.positionLabel}`}
               >
-                <Grip size={11} />
-                Flytta
+                <Grip size={14} />
               </button>
               <button
                 type="button"
-                className="inline-flex items-center justify-center rounded-full border border-white/12 bg-white/6 p-2 text-white/75 transition hover:text-white"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/6 text-white/75 transition hover:text-white"
                 onClick={() => onResetSlot(slot.slotKey)}
                 aria-label={`Återställ ${slot.positionLabel}`}
               >
@@ -153,18 +163,29 @@ function SlotDropZone({
               </button>
             </div>
 
-            <select
-              className="mt-2 w-full rounded-2xl border border-white/12 bg-black/28 px-3 py-2.5 text-xs text-white outline-none"
-              value={slot.playerId ?? ""}
-              onChange={(event) => onAssignPlayer(slot.slotKey, event.target.value || null)}
-            >
-              <option value="">Välj spelare</option>
-              {players.map((availablePlayer) => (
-                <option key={availablePlayer.id} value={availablePlayer.id}>
-                  #{availablePlayer.number} {availablePlayer.firstName} {availablePlayer.lastName}
-                </option>
-              ))}
-            </select>
+            {isOptionsOpen ? (
+              <div className="mt-2 rounded-[22px] border border-white/10 bg-slate-950/88 p-3 shadow-[0_14px_36px_rgba(3,7,18,0.3)] backdrop-blur-sm">
+                <select
+                  className="w-full rounded-2xl border border-white/12 bg-black/28 px-3 py-2.5 text-xs text-white outline-none"
+                  value={slot.playerId ?? ""}
+                  onChange={(event) => onAssignPlayer(slot.slotKey, event.target.value || null)}
+                >
+                  <option value="">Välj spelare</option>
+                  {players.map((availablePlayer) => (
+                    <option key={availablePlayer.id} value={availablePlayer.id}>
+                      #{availablePlayer.number} {availablePlayer.firstName} {availablePlayer.lastName}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="mt-3 inline-flex w-full items-center justify-center rounded-full border border-white/12 bg-white/6 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-white/10"
+                  onClick={() => setIsOptionsOpen(false)}
+                >
+                  Stäng
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="mt-2 rounded-full border border-dashed border-white/14 bg-slate-950/60 px-4 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56 shadow-[0_14px_22px_rgba(3,7,18,0.22)] backdrop-blur-sm">
@@ -239,8 +260,6 @@ export function PitchBoard({
               onMoveSlot={onMoveSlot}
               onResetSlot={onResetSlot}
             />
-          ))}
-        </div> />
           ))}
         </div>
       </div>
