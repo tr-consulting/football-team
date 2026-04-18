@@ -63,16 +63,24 @@ function SlotDropZone({
       const nextX = dragState.originX + (event.clientX - dragState.startX);
       const nextY = dragState.originY + (event.clientY - dragState.startY);
 
-      onMoveSlot(
-        dragState.slotKey,
-        Math.max(-140, Math.min(140, nextX)),
-        Math.max(-160, Math.min(160, nextY)),
-      );
+      const clampedX = Math.max(-200, Math.min(200, nextX));
+      const clampedY = Math.max(-200, Math.min(200, nextY));
+
+      onMoveSlot(dragState.slotKey, clampedX, clampedY);
     }
 
     function handlePointerUp(event: PointerEvent) {
       if (!dragStateRef.current || dragStateRef.current.pointerId !== event.pointerId) {
         return;
+      }
+
+      const dragState = dragStateRef.current;
+      const nextX = dragState.originX + (event.clientX - dragState.startX);
+      const nextY = dragState.originY + (event.clientY - dragState.startY);
+
+      // Auto-reset if dragged too far
+      if (Math.abs(nextX) > 200 || Math.abs(nextY) > 200) {
+        onResetSlot(dragState.slotKey);
       }
 
       dragStateRef.current = null;
@@ -86,7 +94,7 @@ function SlotDropZone({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [onMoveSlot]);
+  }, [onMoveSlot, onResetSlot]);
 
   return (
     <div
