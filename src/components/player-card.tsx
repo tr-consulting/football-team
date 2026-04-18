@@ -53,7 +53,8 @@ export function PlayerCard({
 }: PlayerCardProps) {
   const styles = getVariantClasses(variant);
   const isCardEmpty = isEmpty || !player;
-  const initial = player?.firstName?.[0]?.toUpperCase() ?? "?";
+  const initials = `${player?.firstName?.[0] ?? "?"}${player?.lastName?.[0] ?? ""}`.toUpperCase();
+  const firstNameLabel = player ? `${player.firstName[0].toUpperCase()}.` : "Ledig plats";
 
   return (
     <div
@@ -88,7 +89,7 @@ export function PlayerCard({
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),rgba(22,47,117,0.65)_55%,rgba(6,20,70,0.96)_100%)] text-5xl font-black text-[#f7e09b]">
-            {initial}
+            {initials}
           </div>
         )}
         <div className="absolute inset-x-0 bottom-0 h-16 bg-[linear-gradient(180deg,transparent,rgba(7,16,54,0.94))]" />
@@ -96,7 +97,7 @@ export function PlayerCard({
 
       <div className="absolute inset-x-3 bottom-3 text-center text-white">
         <p className={clsx("uppercase tracking-[0.26em] text-white/70", styles.firstName)}>
-          {player?.firstName ?? "Ledig plats"}
+          {firstNameLabel}
         </p>
         <p className={clsx("mt-1 font-black uppercase leading-none", styles.name)}>
           {player?.lastName ?? "Tom plats"}

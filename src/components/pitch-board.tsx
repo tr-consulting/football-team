@@ -122,7 +122,7 @@ function SlotDropZone({
         <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} />
 
         {player ? (
-          <div className="mt-2 rounded-[22px] border border-white/10 bg-slate-950/72 p-2.5 shadow-[0_16px_24px_rgba(3,7,18,0.28)] backdrop-blur-sm">
+          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[240px] rounded-[22px] border border-white/10 bg-slate-950/72 p-2.5 shadow-[0_16px_24px_rgba(3,7,18,0.28)] backdrop-blur-sm">
             <div className="flex items-center gap-2">
               <button
                 type="button"
