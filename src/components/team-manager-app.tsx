@@ -37,7 +37,7 @@ import {
   createLineupSlots,
   remapMatchFormation,
 } from "@/lib/formations";
-import { defaultTeamState, loadAppState, saveAppState } from "@/lib/storage";
+import { loadAppState, saveAppState } from "@/lib/storage";
 import {
   getSupabaseSessionUser,
   loadRemoteTeamState,
@@ -91,6 +91,7 @@ function removePlayerEverywhere(match: MatchRecord, playerId: string): MatchReco
     ),
     benchPlayerIds: match.benchPlayerIds.filter((id) => id !== playerId),
     unavailablePlayerIds: match.unavailablePlayerIds.filter((id) => id !== playerId),
+    goalScorers: match.goalScorers?.filter((entry) => entry.playerId !== playerId),
   };
 }
 
@@ -108,6 +109,22 @@ function createMatchState(form: MatchFormState, teamId: string): MatchRecord {
     unavailablePlayerIds: [],
     createdAt: new Date().toISOString(),
   };
+}
+
+function sortPlayersByGoals(
+  entries: { player: Player; goals: number; matches: number }[],
+) {
+  return [...entries].sort((a, b) => {
+    if (b.goals !== a.goals) {
+      return b.goals - a.goals;
+    }
+
+    if (b.matches !== a.matches) {
+      return b.matches - a.matches;
+    }
+
+    return a.player.lastName.localeCompare(b.player.lastName, "sv");
+  });
 }
 
 function DraggablePlayerChip({
@@ -201,6 +218,7 @@ export function TeamManagerApp() {
   const [playerForm, setPlayerForm] = useState<PlayerFormState>(emptyPlayerForm);
   const [playerImageFile, setPlayerImageFile] = useState<File | null>(null);
   const [activeDragPlayerId, setActiveDragPlayerId] = useState<string | null>(null);
+  const [selectedPlayerForModal, setSelectedPlayerForModal] = useState<Player | null>(null);
   const [isExporting, startExportTransition] = useTransition();
   const [sessionUser, setSessionUser] = useState<User | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState(supabaseConfigured);
@@ -393,6 +411,46 @@ export function TeamManagerApp() {
   );
 
   const selectedMatchStarters = selectedMatch?.lineupSlots ?? [];
+  const selectedMatchGoalSummary = useMemo(
+    () =>
+      (selectedMatch?.goalScorers ?? [])
+        .map((entry) => ({
+          ...entry,
+          player: playerMap.get(entry.playerId),
+        }))
+        .filter((entry): entry is typeof entry & { player: Player } => Boolean(entry.player)),
+    [playerMap, selectedMatch?.goalScorers],
+  );
+  const allTimeGoalLeaders = useMemo(() => {
+    const totals = new Map<string, { goals: number; matches: number }>();
+
+    for (const match of state.matches) {
+      for (const scorer of match.goalScorers ?? []) {
+        const current = totals.get(scorer.playerId) ?? { goals: 0, matches: 0 };
+        totals.set(scorer.playerId, {
+          goals: current.goals + scorer.goals,
+          matches: current.matches + 1,
+        });
+      }
+    }
+
+    return sortPlayersByGoals(
+      [...totals.entries()]
+        .map(([playerId, totalsForPlayer]) => {
+          const player = playerMap.get(playerId);
+          if (!player) {
+            return null;
+          }
+
+          return {
+            player,
+            goals: totalsForPlayer.goals,
+            matches: totalsForPlayer.matches,
+          };
+        })
+        .filter((entry): entry is { player: Player; goals: number; matches: number } => Boolean(entry)),
+    );
+  }, [playerMap, state.matches]);
 
   function applyState(nextState: TeamAppState) {
     setState(nextState);
@@ -561,6 +619,27 @@ export function TeamManagerApp() {
 
   function handleResetSlot(slotKey: string) {
     handleSlotOffset(slotKey, 0, 0);
+  }
+
+  function handleGoalCountChange(playerId: string, goalCount: number) {
+    updateSelectedMatch((match) => {
+      const currentScorers = match.goalScorers ?? [];
+      const filteredScorers = currentScorers.filter((entry) => entry.playerId !== playerId);
+
+      if (goalCount <= 0) {
+        return {
+          ...match,
+          goalScorers: filteredScorers.length > 0 ? filteredScorers : undefined,
+        };
+      }
+
+      return {
+        ...match,
+        goalScorers: [...filteredScorers, { playerId, goals: goalCount }].sort((a, b) =>
+          a.playerId.localeCompare(b.playerId),
+        ),
+      };
+    });
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -910,7 +989,7 @@ export function TeamManagerApp() {
                             <p className="text-sm text-white/62">{player.firstName}</p>
                           </div>
                           <div className="w-[118px] shrink-0">
-                            <PlayerCard player={player} positionLabel="Squad" variant="compact" />
+                            <PlayerCard player={player} positionLabel="Squad" variant="compact" onDoubleClick={() => setSelectedPlayerForModal(player)} />
                           </div>
                         </div>
                       </button>
@@ -1055,7 +1134,7 @@ export function TeamManagerApp() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
                   <label className="text-xs uppercase tracking-[0.28em] text-white/50">Datum & Tid</label>
                   <input
@@ -1091,7 +1170,153 @@ export function TeamManagerApp() {
                     className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none placeholder:text-white/35"
                   />
                 </div>
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
+                  <label className="text-xs uppercase tracking-[0.28em] text-white/50">Resultat</label>
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      value={selectedMatch.homeScore ?? ""}
+                      onChange={(event) =>
+                        updateSelectedMatch((match) => ({ 
+                          ...match, 
+                          homeScore: event.target.value ? parseInt(event.target.value) : undefined 
+                        }))
+                      }
+                      placeholder="Vi"
+                      className="w-16 rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-center text-white outline-none placeholder:text-white/35"
+                    />
+                    <span className="text-white/50">-</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={selectedMatch.awayScore ?? ""}
+                      onChange={(event) =>
+                        updateSelectedMatch((match) => ({ 
+                          ...match, 
+                          awayScore: event.target.value ? parseInt(event.target.value) : undefined 
+                        }))
+                      }
+                      placeholder="Dom"
+                      className="w-16 rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-center text-white outline-none placeholder:text-white/35"
+                    />
+                  </div>
+                </div>
               </div>
+
+              {(selectedMatch.homeScore !== undefined || selectedMatch.awayScore !== undefined) && (
+                <div className="mt-6 rounded-[24px] border border-white/10 bg-white/6 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <label className="text-xs uppercase tracking-[0.28em] text-white/50">Målskyttar</label>
+                      <p className="mt-2 text-sm text-white/58">
+                        Välj hur många mål varje spelare gjorde i matchen. Listan sparas och bygger er skytteliga över tid.
+                      </p>
+                    </div>
+                    <div className="rounded-full border border-white/10 bg-black/18 px-4 py-2 text-xs uppercase tracking-[0.22em] text-white/65">
+                      Totalt i matchen: {selectedMatchGoalSummary.reduce((sum, entry) => sum + entry.goals, 0)}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                    {state.players.map((player) => {
+                      const currentGoals =
+                        selectedMatch.goalScorers?.find((entry) => entry.playerId === player.id)?.goals ?? 0;
+
+                      return (
+                        <div
+                          key={player.id}
+                          className={clsx(
+                            "flex items-center justify-between gap-3 rounded-[20px] border px-3 py-3 transition",
+                            currentGoals > 0
+                              ? "border-emerald-400/40 bg-emerald-400/10"
+                              : "border-white/10 bg-black/18",
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                              #{player.number} {player.lastName}
+                            </p>
+                            <p className="text-xs text-white/56">{player.firstName}</p>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {[0, 1, 2, 3, 4, 5].map((goalCount) => (
+                              <button
+                                key={goalCount}
+                                type="button"
+                                onClick={() => handleGoalCountChange(player.id, goalCount)}
+                                className={clsx(
+                                  "inline-flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-sm font-black transition",
+                                  currentGoals === goalCount
+                                    ? "border-amber-300 bg-amber-300 text-slate-950"
+                                    : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                                )}
+                                aria-label={`${player.firstName} ${player.lastName} gjorde ${goalCount} mål`}
+                              >
+                                {goalCount}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                    <div className="rounded-[20px] border border-white/10 bg-black/18 p-4">
+                      <p className="text-xs uppercase tracking-[0.22em] text-white/48">Målskyttar i vald match</p>
+                      <div className="mt-3 space-y-2">
+                        {selectedMatchGoalSummary.length > 0 ? (
+                          selectedMatchGoalSummary.map((entry) => (
+                            <div
+                              key={entry.playerId}
+                              className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/6 px-4 py-3"
+                            >
+                              <span className="text-sm font-semibold uppercase tracking-[0.08em] text-white">
+                                #{entry.player.number} {entry.player.lastName}
+                              </span>
+                              <span className="rounded-full bg-amber-300 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-slate-950">
+                                {entry.goals} mål
+                              </span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                            Inga målskyttar valda ännu.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-[20px] border border-white/10 bg-black/18 p-4">
+                      <p className="text-xs uppercase tracking-[0.22em] text-white/48">Skytteliga totalt</p>
+                      <div className="mt-3 space-y-2">
+                        {allTimeGoalLeaders.length > 0 ? (
+                          allTimeGoalLeaders.slice(0, 8).map((entry) => (
+                            <div
+                              key={entry.player.id}
+                              className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/6 px-4 py-3"
+                            >
+                              <div>
+                                <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                                  #{entry.player.number} {entry.player.lastName}
+                                </p>
+                                <p className="text-xs text-white/52">{entry.matches} matcher med mål</p>
+                              </div>
+                              <span className="text-lg font-black text-emerald-200">{entry.goals}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                            Skytteligan börjar fyllas när ni registrerar målskyttar.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
@@ -1146,6 +1371,7 @@ export function TeamManagerApp() {
                   onAssignPlayer={handleAssignPlayer}
                   onMoveSlot={handleSlotOffset}
                   onResetSlot={handleResetSlot}
+                  onDoubleClick={(player) => setSelectedPlayerForModal(player)}
                 />
 
                 <div className="space-y-4">
@@ -1254,6 +1480,27 @@ export function TeamManagerApp() {
           />
         </div>
       </div>
+
+      {selectedPlayerForModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setSelectedPlayerForModal(null)}>
+          <div className="relative w-full max-w-xl p-6 sm:p-8" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setSelectedPlayerForModal(null)}
+              className="absolute -top-2 -right-2 rounded-full bg-white/10 p-2 text-white/70 hover:text-white"
+            >
+              ✕
+            </button>
+            <PlayerCard
+              player={selectedPlayerForModal}
+              positionLabel="Spelare"
+              variant="story"
+              enableZoom={false}
+              showFullImage
+            />
+          </div>
+        </div>
+      )}
 
       <DragOverlay>
         {activeDragPlayerId ? (

@@ -23,6 +23,16 @@ export function ExportStory({
   getPlayer,
 }: ExportStoryProps) {
   const formationLabel = match.formationKey.toUpperCase();
+  const goalSummary = (match.goalScorers ?? [])
+    .map((entry) => {
+      const player = getPlayer(entry.playerId);
+      if (!player) {
+        return null;
+      }
+
+      return `${player.lastName} ${entry.goals > 1 ? `(${entry.goals})` : ""}`.trim();
+    })
+    .filter((entry): entry is string => Boolean(entry));
 
   return (
     <div className="relative flex h-full w-full overflow-hidden rounded-[42px] bg-[linear-gradient(180deg,#07111e_0%,#0d1930_34%,#091422_100%)] text-white">
@@ -58,6 +68,16 @@ export function ExportStory({
           <p className="mt-4 inline-flex rounded-full border border-[#f3db95]/28 bg-[#f3db95]/14 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-[#f8e7ae]">
             {formationLabel}
           </p>
+          {match.homeScore !== undefined || match.awayScore !== undefined ? (
+            <p className="mt-4 text-2xl font-black uppercase tracking-[0.08em] text-white">
+              {match.homeScore ?? 0} - {match.awayScore ?? 0}
+            </p>
+          ) : null}
+          {goalSummary.length > 0 ? (
+            <p className="mt-3 text-sm leading-6 text-white/68">
+              Mål: {goalSummary.join(", ")}
+            </p>
+          ) : null}
         </div>
 
         <div className="mt-7 grid gap-4">

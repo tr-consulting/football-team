@@ -6,8 +6,12 @@ create table if not exists public.teams (
   name text not null,
   season text not null,
   accent text not null default '#f97316',
+  selected_match_id uuid,
   created_at timestamptz not null default now()
 );
+
+alter table public.teams
+  add column if not exists selected_match_id uuid;
 
 create table if not exists public.players (
   id uuid primary key default gen_random_uuid(),
@@ -27,8 +31,14 @@ create table if not exists public.matches (
   location text not null,
   formation_key text not null,
   status text not null default 'draft' check (status in ('draft', 'ready')),
+  home_score integer,
+  away_score integer,
   created_at timestamptz not null default now()
 );
+
+alter table public.matches
+  add column if not exists home_score integer,
+  add column if not exists away_score integer;
 
 create table if not exists public.match_lineup_slots (
   id uuid primary key default gen_random_uuid(),
@@ -57,19 +67,55 @@ create table if not exists public.match_unavailable_players (
   primary key (match_id, player_id)
 );
 
+create table if not exists public.match_goal_scorers (
+  match_id uuid not null references public.matches (id) on delete cascade,
+  player_id uuid not null references public.players (id) on delete cascade,
+  goals integer not null default 1 check (goals > 0),
+  created_at timestamptz not null default now(),
+  primary key (match_id, player_id)
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'teams_selected_match_id_fkey'
+      and conrelid = 'public.teams'::regclass
+  ) then
+    alter table public.teams
+      add constraint teams_selected_match_id_fkey
+      foreign key (selected_match_id)
+      references public.matches (id)
+      on delete set null;
+  end if;
+end
+$$;
+
+create index if not exists idx_players_team_id on public.players (team_id);
+create index if not exists idx_matches_team_id on public.matches (team_id);
+create index if not exists idx_matches_match_date on public.matches (match_date);
+create index if not exists idx_match_lineup_slots_match_id on public.match_lineup_slots (match_id);
+create index if not exists idx_match_bench_players_match_id on public.match_bench_players (match_id);
+create index if not exists idx_match_unavailable_players_match_id on public.match_unavailable_players (match_id);
+create index if not exists idx_match_goal_scorers_match_id on public.match_goal_scorers (match_id);
+
 alter table public.teams enable row level security;
 alter table public.players enable row level security;
 alter table public.matches enable row level security;
 alter table public.match_lineup_slots enable row level security;
 alter table public.match_bench_players enable row level security;
 alter table public.match_unavailable_players enable row level security;
+alter table public.match_goal_scorers enable row level security;
 
+drop policy if exists "leaders manage own teams" on public.teams;
 create policy "leaders manage own teams"
 on public.teams
 for all
 using (owner_user_id = auth.uid())
 with check (owner_user_id = auth.uid());
 
+drop policy if exists "leaders manage own players" on public.players;
 create policy "leaders manage own players"
 on public.players
 for all
@@ -90,6 +136,7 @@ with check (
   )
 );
 
+drop policy if exists "leaders manage own matches" on public.matches;
 create policy "leaders manage own matches"
 on public.matches
 for all
@@ -110,6 +157,7 @@ with check (
   )
 );
 
+drop policy if exists "leaders manage own lineup slots" on public.match_lineup_slots;
 create policy "leaders manage own lineup slots"
 on public.match_lineup_slots
 for all
@@ -132,6 +180,7 @@ with check (
   )
 );
 
+drop policy if exists "leaders manage own bench" on public.match_bench_players;
 create policy "leaders manage own bench"
 on public.match_bench_players
 for all
@@ -154,6 +203,7 @@ with check (
   )
 );
 
+drop policy if exists "leaders manage own unavailable list" on public.match_unavailable_players;
 create policy "leaders manage own unavailable list"
 on public.match_unavailable_players
 for all
@@ -176,10 +226,34 @@ with check (
   )
 );
 
+drop policy if exists "leaders manage own goal scorers" on public.match_goal_scorers;
+create policy "leaders manage own goal scorers"
+on public.match_goal_scorers
+for all
+using (
+  exists (
+    select 1
+    from public.matches
+    join public.teams on teams.id = matches.team_id
+    where matches.id = match_goal_scorers.match_id
+      and teams.owner_user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.matches
+    join public.teams on teams.id = matches.team_id
+    where matches.id = match_goal_scorers.match_id
+      and teams.owner_user_id = auth.uid()
+  )
+);
+
 insert into storage.buckets (id, name, public)
 values ('player-images', 'player-images', true)
 on conflict (id) do nothing;
 
+drop policy if exists "leaders upload player images" on storage.objects;
 create policy "leaders upload player images"
 on storage.objects
 for insert
@@ -189,6 +263,7 @@ with check (
   and auth.uid()::text = (storage.foldername(name))[1]
 );
 
+drop policy if exists "leaders read player images" on storage.objects;
 create policy "leaders read player images"
 on storage.objects
 for select

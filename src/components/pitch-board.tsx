@@ -14,6 +14,7 @@ type PitchBoardProps = {
   onAssignPlayer: (slotKey: string, playerId: string | null) => void;
   onMoveSlot: (slotKey: string, offsetX: number, offsetY: number) => void;
   onResetSlot: (slotKey: string) => void;
+  onDoubleClick?: (player: Player) => void;
 };
 
 type DragState = {
@@ -36,6 +37,7 @@ function SlotDropZone({
   onAssignPlayer,
   onMoveSlot,
   onResetSlot,
+  onDoubleClick,
 }: {
   slot: LineupSlot;
   players: Player[];
@@ -43,6 +45,7 @@ function SlotDropZone({
   onAssignPlayer: (slotKey: string, playerId: string | null) => void;
   onMoveSlot: (slotKey: string, offsetX: number, offsetY: number) => void;
   onResetSlot: (slotKey: string) => void;
+  onDoubleClick?: () => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: slot.slotKey,
@@ -120,7 +123,7 @@ function SlotDropZone({
         }}
       >
         <div className="absolute inset-x-6 bottom-8 h-5 rounded-full bg-black/35 blur-md" />
-        <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} />
+        <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} variant="face" onDoubleClick={onDoubleClick} />
 
         {player ? (
           <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[220px] text-white">
@@ -205,6 +208,7 @@ export function PitchBoard({
   onAssignPlayer,
   onMoveSlot,
   onResetSlot,
+  onDoubleClick,
 }: PitchBoardProps) {
   const playerMap = useMemo(
     () => new Map(players.map((player) => [player.id, player])),
@@ -223,7 +227,7 @@ export function PitchBoard({
           </h3>
         </div>
         <p className="max-w-xs text-right text-sm text-white/48">
-          Korten står upp ovanför planen. Dra korten eller välj spelare per position.
+          Korten står upp ovanför planen. Dra korten, välj spelare per position eller dubbelklicka för helbild.
         </p>
       </div>
 
@@ -261,6 +265,10 @@ export function PitchBoard({
               onAssignPlayer={onAssignPlayer}
               onMoveSlot={onMoveSlot}
               onResetSlot={onResetSlot}
+              onDoubleClick={slot.playerId && onDoubleClick ? () => {
+                const player = playerMap.get(slot.playerId!);
+                if (player) onDoubleClick(player);
+              } : undefined}
             />
           ))}
         </div>

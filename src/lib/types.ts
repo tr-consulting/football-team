@@ -1,5 +1,10 @@
 export type MatchStatus = "draft" | "ready";
 
+export type MatchGoalScorer = {
+  playerId: string;
+  goals: number;
+};
+
 export type Player = {
   id: string;
   teamId: string;
@@ -48,6 +53,9 @@ export type MatchRecord = {
   lineupSlots: LineupSlot[];
   benchPlayerIds: string[];
   unavailablePlayerIds: string[];
+  homeScore?: number;
+  awayScore?: number;
+  goalScorers?: MatchGoalScorer[];
   createdAt: string;
 };
 

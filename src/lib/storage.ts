@@ -44,11 +44,15 @@ export function loadAppState(): TeamAppState {
 
   try {
     const parsed = JSON.parse(raw) as TeamAppState;
+    // Try to keep the selected match if it still exists, otherwise use first match
+    const validSelectedMatchId = parsed.selectedMatchId && parsed.matches.some(m => m.id === parsed.selectedMatchId)
+      ? parsed.selectedMatchId
+      : parsed.matches[0]?.id ?? defaultTeamState.matches[0]?.id ?? null;
+    
     return {
       ...defaultTeamState,
       ...parsed,
-      selectedMatchId:
-        parsed.selectedMatchId ?? parsed.matches[0]?.id ?? defaultTeamState.matches[0].id,
+      selectedMatchId: validSelectedMatchId,
     };
   } catch {
     return {

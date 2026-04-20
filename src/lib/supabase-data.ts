@@ -3,7 +3,7 @@ import type { User } from "@supabase/supabase-js";
 import { createLineupSlots, DEFAULT_FORMATION_KEY } from "@/lib/formations";
 import { defaultTeamState } from "@/lib/storage";
 import { supabase } from "@/lib/supabase";
-import { LineupSlot, MatchRecord, Player, Team, TeamAppState } from "@/lib/types";
+import { LineupSlot, MatchGoalScorer, MatchRecord, Player, Team, TeamAppState } from "@/lib/types";
 
 type TeamRow = {
   id: string;
@@ -11,6 +11,7 @@ type TeamRow = {
   name: string;
   season: string;
   accent: string;
+  selected_match_id: string | null;
   created_at: string;
 };
 
@@ -32,6 +33,8 @@ type MatchRow = {
   location: string;
   formation_key: string;
   status: "draft" | "ready";
+  home_score: number | null;
+  away_score: number | null;
   created_at: string;
 };
 
@@ -49,6 +52,12 @@ type SlotRow = {
 type MatchPlayerRow = {
   match_id: string;
   player_id: string;
+};
+
+type MatchGoalScorerRow = {
+  match_id: string;
+  player_id: string;
+  goals: number;
 };
 
 function assertSupabase() {
@@ -113,6 +122,7 @@ function mapMatch(
   slots: SlotRow[],
   benchRows: MatchPlayerRow[],
   unavailableRows: MatchPlayerRow[],
+  scorerRows: MatchGoalScorerRow[],
 ): MatchRecord {
   return {
     id: row.id,
@@ -132,15 +142,25 @@ function mapMatch(
     unavailablePlayerIds: unavailableRows
       .filter((entry) => entry.match_id === row.id)
       .map((entry) => entry.player_id),
+    homeScore: row.home_score ?? undefined,
+    awayScore: row.away_score ?? undefined,
+    goalScorers: scorerRows
+      .filter((entry) => entry.match_id === row.id)
+      .map(
+        (entry): MatchGoalScorer => ({
+          playerId: entry.player_id,
+          goals: Number(entry.goals),
+        }),
+      ),
     createdAt: row.created_at,
   };
 }
 
-async function ensureLeaderTeam(user: User): Promise<Team> {
+async function ensureLeaderTeam(user: User): Promise<TeamRow> {
   const client = assertSupabase();
   const { data: existingTeam, error: existingTeamError } = await client
     .from("teams")
-    .select("id, owner_user_id, name, season, accent, created_at")
+    .select("id, owner_user_id, name, season, accent, selected_match_id, created_at")
     .eq("owner_user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(1)
@@ -151,7 +171,7 @@ async function ensureLeaderTeam(user: User): Promise<Team> {
   }
 
   if (existingTeam) {
-    return mapTeam(existingTeam as TeamRow);
+    return existingTeam as TeamRow;
   }
 
   const { data: createdTeam, error: createError } = await client
@@ -161,15 +181,16 @@ async function ensureLeaderTeam(user: User): Promise<Team> {
       name: defaultTeamState.team.name,
       season: defaultTeamState.team.season,
       accent: defaultTeamState.team.accent,
+      selected_match_id: null,
     })
-    .select("id, owner_user_id, name, season, accent, created_at")
+    .select("id, owner_user_id, name, season, accent, selected_match_id, created_at")
     .single();
 
   if (createError) {
     throw createError;
   }
 
-  return mapTeam(createdTeam as TeamRow);
+  return createdTeam as TeamRow;
 }
 
 export async function getSupabaseSessionUser() {
@@ -245,7 +266,8 @@ export async function uploadPlayerImage(userId: string, playerId: string, file: 
 
 export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
   const client = assertSupabase();
-  const team = await ensureLeaderTeam(user);
+  const teamRow = await ensureLeaderTeam(user);
+  const team = mapTeam(teamRow);
 
   const { data: playersData, error: playersError } = await client
     .from("players")
@@ -259,7 +281,9 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
 
   const { data: matchesData, error: matchesError } = await client
     .from("matches")
-    .select("id, team_id, match_date, opponent_name, location, formation_key, status, created_at")
+    .select(
+      "id, team_id, match_date, opponent_name, location, formation_key, status, home_score, away_score, created_at",
+    )
     .eq("team_id", team.id)
     .order("match_date", { ascending: true });
 
@@ -269,7 +293,7 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
 
   const matchIds = (matchesData ?? []).map((match) => match.id);
 
-  const [slotsResult, benchResult, unavailableResult] = await Promise.all([
+  const [slotsResult, benchResult, unavailableResult, scorersResult] = await Promise.all([
     matchIds.length
       ? client
           .from("match_lineup_slots")
@@ -290,6 +314,12 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
           .select("match_id, player_id")
           .in("match_id", matchIds)
       : Promise.resolve({ data: [], error: null }),
+    matchIds.length
+      ? client
+          .from("match_goal_scorers")
+          .select("match_id, player_id, goals")
+          .in("match_id", matchIds)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (slotsResult.error) {
@@ -304,6 +334,10 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
     throw unavailableResult.error;
   }
 
+  if (scorersResult.error) {
+    throw scorersResult.error;
+  }
+
   const players = (playersData ?? []).map((row) => mapPlayer(row as PlayerRow));
   const matches = (matchesData ?? []).map((row) =>
     mapMatch(
@@ -311,6 +345,7 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
       (slotsResult.data ?? []) as SlotRow[],
       (benchResult.data ?? []) as MatchPlayerRow[],
       (unavailableResult.data ?? []) as MatchPlayerRow[],
+      (scorersResult.data ?? []) as MatchGoalScorerRow[],
     ),
   );
 
@@ -324,11 +359,16 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
     };
   }
 
+  const selectedMatchId =
+    (teamRow.selected_match_id && matches.some((match) => match.id === teamRow.selected_match_id))
+      ? teamRow.selected_match_id
+      : matches[0]?.id ?? null;
+
   return {
     team,
     players,
     matches,
-    selectedMatchId: matches[0]?.id ?? null,
+    selectedMatchId,
   };
 }
 
@@ -341,6 +381,7 @@ export async function persistRemoteTeamState(state: TeamAppState) {
       name: state.team.name,
       season: state.team.season,
       accent: state.team.accent,
+      selected_match_id: state.selectedMatchId,
     })
     .eq("id", state.team.id);
 
@@ -400,6 +441,8 @@ export async function persistRemoteTeamState(state: TeamAppState) {
         location: match.location,
         formation_key: match.formationKey,
         status: match.status,
+        home_score: match.homeScore ?? null,
+        away_score: match.awayScore ?? null,
         created_at: match.createdAt,
       })),
     );
@@ -439,10 +482,11 @@ export async function persistRemoteTeamState(state: TeamAppState) {
     return;
   }
 
-  const [deleteSlots, deleteBench, deleteUnavailable] = await Promise.all([
+  const [deleteSlots, deleteBench, deleteUnavailable, deleteScorers] = await Promise.all([
     client.from("match_lineup_slots").delete().in("match_id", currentMatchIds),
     client.from("match_bench_players").delete().in("match_id", currentMatchIds),
     client.from("match_unavailable_players").delete().in("match_id", currentMatchIds),
+    client.from("match_goal_scorers").delete().in("match_id", currentMatchIds),
   ]);
 
   if (deleteSlots.error) {
@@ -455,6 +499,10 @@ export async function persistRemoteTeamState(state: TeamAppState) {
 
   if (deleteUnavailable.error) {
     throw deleteUnavailable.error;
+  }
+
+  if (deleteScorers.error) {
+    throw deleteScorers.error;
   }
 
   const lineupRows = state.matches.flatMap((match) =>
@@ -511,6 +559,24 @@ export async function persistRemoteTeamState(state: TeamAppState) {
 
     if (insertUnavailableError) {
       throw insertUnavailableError;
+    }
+  }
+
+  const scorerRows = state.matches.flatMap((match) =>
+    (match.goalScorers ?? []).map((scorer) => ({
+      match_id: match.id,
+      player_id: scorer.playerId,
+      goals: scorer.goals,
+    })),
+  );
+
+  if (scorerRows.length > 0) {
+    const { error: insertScorersError } = await client
+      .from("match_goal_scorers")
+      .insert(scorerRows);
+
+    if (insertScorersError) {
+      throw insertScorersError;
     }
   }
 }
