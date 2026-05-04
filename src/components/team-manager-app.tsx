@@ -16,12 +16,15 @@ import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import { toPng } from "html-to-image";
 import {
+  Bot,
   CalendarDays,
   Download,
+  LoaderCircle,
   LogOut,
   Mail,
   MapPin,
   Plus,
+  Send,
   Shield,
   Sparkles,
   Trash2,
@@ -31,13 +34,19 @@ import {
 import { ExportStory } from "@/components/export-story";
 import { PitchBoard } from "@/components/pitch-board";
 import { PlayerCard } from "@/components/player-card";
+import { ImageCropper } from "@/components/image-cropper";
 import {
   DEFAULT_FORMATION_KEY,
   FORMATION_TEMPLATES,
   createLineupSlots,
   remapMatchFormation,
 } from "@/lib/formations";
-import { loadAppState, saveAppState } from "@/lib/storage";
+import {
+  loadAiAnalysisSettings,
+  loadAppState,
+  saveAiAnalysisSettings,
+  saveAppState,
+} from "@/lib/storage";
 import {
   getSupabaseSessionUser,
   loadRemoteTeamState,
@@ -48,7 +57,13 @@ import {
   uploadPlayerImage,
 } from "@/lib/supabase-data";
 import { supabaseConfigured } from "@/lib/supabase";
-import { MatchRecord, Player, TeamAppState } from "@/lib/types";
+import {
+  AiAnalysisSettings,
+  MatchRecord,
+  Player,
+  PlayerTrait,
+  TeamAppState,
+} from "@/lib/types";
 
 type PlayerFormState = {
   id?: string;
@@ -65,7 +80,16 @@ type MatchFormState = {
   formationKey: string;
 };
 
-type StudioTab = "players" | "matches" | "lineup" | "export";
+type StudioTab = "players" | "matches" | "lineup" | "export" | "analysis";
+
+const PLAYER_TRAIT_OPTIONS: PlayerTrait[] = [
+  "Peppande",
+  "Utstrålar glädje",
+  "Ledare",
+  "Lugn under press",
+  "Kommunikativ",
+  "Vinnarskalle",
+];
 
 const emptyPlayerForm: PlayerFormState = {
   firstName: "",
@@ -73,6 +97,28 @@ const emptyPlayerForm: PlayerFormState = {
   number: "",
   image: "",
 };
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (typeof error === "object" && error !== null) {
+    const maybeMessage = "message" in error ? error.message : undefined;
+    const maybeDetails = "details" in error ? error.details : undefined;
+    const maybeHint = "hint" in error ? error.hint : undefined;
+
+    const parts = [maybeMessage, maybeDetails, maybeHint].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+
+    if (parts.length > 0) {
+      return parts.join(" ");
+    }
+  }
+
+  return fallback;
+}
 
 function formatShortDate(dateString: string) {
   return new Intl.DateTimeFormat("sv-SE", {
@@ -100,6 +146,7 @@ function createMatchState(form: MatchFormState, teamId: string): MatchRecord {
     id: crypto.randomUUID(),
     teamId,
     matchDate: form.matchDate,
+    matchType: "league",
     opponentName: form.opponentName,
     location: form.location,
     formationKey: form.formationKey,
@@ -125,6 +172,56 @@ function sortPlayersByGoals(
 
     return a.player.lastName.localeCompare(b.player.lastName, "sv");
   });
+}
+
+function buildAiAnalysisPrompt(matches: MatchRecord[], players: Map<string, Player>, question: string) {
+  const matchSummary = matches
+    .map((match) => {
+      const starters = match.lineupSlots.map((slot) => {
+        const player = slot.playerId ? players.get(slot.playerId) : undefined;
+        return {
+          position: slot.positionLabel,
+          player: player ? `${player.firstName} ${player.lastName}` : "Ingen spelare vald",
+          number: player?.number ?? null,
+        };
+      });
+
+      const bench = match.benchPlayerIds
+        .map((playerId) => players.get(playerId))
+        .filter((player): player is Player => Boolean(player))
+        .map((player) => `${player.firstName} ${player.lastName} (#${player.number})`);
+
+      const unavailable = match.unavailablePlayerIds
+        .map((playerId) => players.get(playerId))
+        .filter((player): player is Player => Boolean(player))
+        .map((player) => `${player.firstName} ${player.lastName} (#${player.number})`);
+
+      const scorers = (match.goalScorers ?? []).map((entry) => {
+        const player = players.get(entry.playerId);
+        return player
+          ? `${player.firstName} ${player.lastName}: ${entry.goals} mål`
+          : `${entry.playerId}: ${entry.goals} mål`;
+      });
+
+      return {
+        opponent: match.opponentName,
+        date: match.matchDate,
+        location: match.location,
+        formation: match.formationKey,
+        result:
+          match.homeScore !== undefined || match.awayScore !== undefined
+            ? `${match.homeScore ?? 0}-${match.awayScore ?? 0}`
+            : "Ej registrerat",
+        starters,
+        bench,
+        unavailable,
+        scorers,
+      };
+    })
+    .map((entry, index) => `Match ${index + 1}:\n${JSON.stringify(entry, null, 2)}`)
+    .join("\n\n");
+
+  return `${question.trim()}\n\nUtgå från dessa matchdata och ge konkreta tränarrekommendationer på svenska:\n\n${matchSummary}`;
 }
 
 function DraggablePlayerChip({
@@ -219,6 +316,7 @@ export function TeamManagerApp() {
   const [playerImageFile, setPlayerImageFile] = useState<File | null>(null);
   const [activeDragPlayerId, setActiveDragPlayerId] = useState<string | null>(null);
   const [selectedPlayerForModal, setSelectedPlayerForModal] = useState<Player | null>(null);
+  const [matchPendingDelete, setMatchPendingDelete] = useState<MatchRecord | null>(null);
   const [isExporting, startExportTransition] = useTransition();
   const [sessionUser, setSessionUser] = useState<User | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState(supabaseConfigured);
@@ -228,6 +326,10 @@ export function TeamManagerApp() {
   const [authMessage, setAuthMessage] = useState("");
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [aiSettings, setAiSettings] = useState<AiAnalysisSettings>(() => loadAiAnalysisSettings());
+  const [aiResponse, setAiResponse] = useState("");
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
   const lastRemoteSnapshotRef = useRef("");
   const hasRemoteBootstrapRef = useRef(false);
@@ -259,7 +361,7 @@ export function TeamManagerApp() {
       })
       .catch((error) => {
         if (isMounted) {
-          setSyncError(error instanceof Error ? error.message : "Kunde inte läsa session.");
+          setSyncError(getErrorMessage(error, "Kunde inte läsa session."));
         }
       })
       .finally(() => {
@@ -310,7 +412,7 @@ export function TeamManagerApp() {
       })
       .catch((error) => {
         if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : "Kunde inte läsa från Supabase.");
+          setSyncError(getErrorMessage(error, "Kunde inte läsa från Supabase."));
         }
       })
       .finally(() => {
@@ -339,11 +441,14 @@ export function TeamManagerApp() {
       void persistRemoteTeamState(state)
         .then(() => {
           lastRemoteSnapshotRef.current = snapshot;
+          setSyncError(null);
           setSyncMessage("Synkad");
           window.setTimeout(() => setSyncMessage(null), 1400);
         })
         .catch((error) => {
-          setSyncError(error instanceof Error ? error.message : "Kunde inte spara till Supabase.");
+          console.error("Supabase sync error:", error);
+          const errorMessage = getErrorMessage(error, "Kunde inte spara till Supabase.");
+          setSyncError(errorMessage);
           setSyncMessage(null);
         });
     }, 400);
@@ -352,6 +457,19 @@ export function TeamManagerApp() {
       window.clearTimeout(timeout);
     };
   }, [state, sessionUser]);
+
+  useEffect(() => {
+    saveAiAnalysisSettings(aiSettings);
+  }, [aiSettings]);
+
+  useEffect(() => {
+    setAiSettings((current) => ({
+      ...current,
+      selectedMatchIds: current.selectedMatchIds.filter((matchId) =>
+        state.matches.some((match) => match.id === matchId),
+      ),
+    }));
+  }, [state.matches]);
 
   const selectedMatch =
     state.matches.find((match) => match.id === state.selectedMatchId) ?? state.matches[0] ?? null;
@@ -451,10 +569,18 @@ export function TeamManagerApp() {
         .filter((entry): entry is { player: Player; goals: number; matches: number } => Boolean(entry)),
     );
   }, [playerMap, state.matches]);
+  const selectedAiMatches = useMemo(
+    () => state.matches.filter((match) => aiSettings.selectedMatchIds.includes(match.id)),
+    [aiSettings.selectedMatchIds, state.matches],
+  );
 
   function applyState(nextState: TeamAppState) {
     setState(nextState);
     saveAppState(nextState);
+  }
+
+  function updateAiSettings(patch: Partial<AiAnalysisSettings>) {
+    setAiSettings((current) => ({ ...current, ...patch }));
   }
 
   function updateState(updater: (current: TeamAppState) => TeamAppState) {
@@ -473,6 +599,24 @@ export function TeamManagerApp() {
         match.id === selectedMatch.id ? updater(match) : match,
       ),
     }));
+  }
+
+  function updatePlayer(playerId: string, patch: Partial<Player>) {
+    updateState((current) => ({
+      ...current,
+      players: current.players.map((player) =>
+        player.id === playerId ? { ...player, ...patch } : player,
+      ),
+    }));
+  }
+
+  function saveModalPlayer() {
+    if (!selectedPlayerForModal) {
+      return;
+    }
+
+    updatePlayer(selectedPlayerForModal.id, selectedPlayerForModal);
+    setSelectedPlayerForModal(null);
   }
 
   async function handlePlayerSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -494,6 +638,7 @@ export function TeamManagerApp() {
     }
 
     updateState((current) => {
+      const existingPlayer = current.players.find((player) => player.id === playerId);
       const basePlayer = {
         id: playerId,
         teamId: current.team.id,
@@ -501,9 +646,16 @@ export function TeamManagerApp() {
         lastName: playerForm.lastName.trim(),
         number: playerForm.number.trim(),
         image,
+        smallCardCropArea: existingPlayer?.smallCardCropArea ?? { x: 50, y: 50, width: 100, height: 100 },
+        smallCardShowName: existingPlayer?.smallCardShowName ?? true,
+        smallCardShowPosition: existingPlayer?.smallCardShowPosition ?? true,
+        smallCardShowNumber: existingPlayer?.smallCardShowNumber ?? true,
+        largeCardImageFocus: existingPlayer?.largeCardImageFocus ?? "full",
+        yellowCards: existingPlayer?.yellowCards ?? 0,
+        redCards: existingPlayer?.redCards ?? 0,
+        traits: existingPlayer?.traits ?? [],
         createdAt:
-          current.players.find((player) => player.id === playerId)?.createdAt ??
-          new Date().toISOString(),
+          existingPlayer?.createdAt ?? new Date().toISOString(),
       };
 
       const players = playerForm.id
@@ -567,6 +719,25 @@ export function TeamManagerApp() {
   setNewMatchForm(matchForm);
   setActiveTab("lineup");
 }
+
+  function handleDeleteMatch(matchId: string) {
+    updateState((current) => {
+      const remainingMatches = current.matches.filter((match) => match.id !== matchId);
+      const nextSelectedMatchId =
+        current.selectedMatchId === matchId
+          ? remainingMatches[0]?.id ?? null
+          : current.selectedMatchId;
+
+      return {
+        ...current,
+        matches: remainingMatches,
+        selectedMatchId: nextSelectedMatchId,
+      };
+    });
+
+    setMatchPendingDelete(null);
+    setActiveTab("matches");
+  }
 
   function handleAssignPlayer(slotKey: string, playerId: string | null) {
     updateSelectedMatch((match) => {
@@ -688,6 +859,72 @@ export function TeamManagerApp() {
       link.href = dataUrl;
       link.click();
     });
+  }
+
+  async function handleRunAiAnalysis() {
+    const endpoint = aiSettings.endpoint.trim().replace(/\/+$/, "");
+    const deployment = aiSettings.deployment.trim();
+    const apiKey = aiSettings.apiKey.trim();
+
+    if (!endpoint || !deployment || !apiKey) {
+      setAiError("Fyll i endpoint, deployment och API-nyckel för Azure AI.");
+      return;
+    }
+
+    if (selectedAiMatches.length === 0) {
+      setAiError("Välj minst en match att analysera.");
+      return;
+    }
+
+    setIsAiLoading(true);
+    setAiError(null);
+    setAiResponse("");
+
+    try {
+      const response = await fetch(`${endpoint}/openai/v1/responses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": apiKey,
+        },
+        body: JSON.stringify({
+          model: deployment,
+          input: `Du ar en svensk fotbollsanalytiker for ungdoms- och 9v9-fotboll. Ge konkreta, pedagogiska rekommendationer pa svenska.\n\n${buildAiAnalysisPrompt(selectedAiMatches, playerMap, aiSettings.question)}`,
+          max_output_tokens: 900,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: { message?: string };
+        output?: Array<{
+          content?: Array<{
+            type?: string;
+            text?: string;
+          }>;
+        }>;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error?.message ?? "Azure AI svarade med ett fel.");
+      }
+
+      const content = payload.output
+        ?.flatMap((item) => item.content ?? [])
+        .filter((item) => item.type === "output_text")
+        .map((item) => item.text ?? "")
+        .join("\n")
+        .trim();
+
+      if (!content) {
+        throw new Error("Azure AI returnerade inget analysinnehåll.");
+      }
+
+      setAiResponse(content);
+    } catch (error) {
+      setAiError(getErrorMessage(error, "Kunde inte köra AI-analysen."));
+    } finally {
+      setIsAiLoading(false);
+    }
   }
 
   async function handleSendMagicLink(event: React.FormEvent<HTMLFormElement>) {
@@ -815,10 +1052,11 @@ export function TeamManagerApp() {
         <section className="rounded-[32px] border border-white/10 bg-slate-950/45 p-3 shadow-[0_20px_50px_rgba(2,6,23,0.2)]">
           <div className="flex flex-wrap gap-3">
            {[
-  { key: "players", label: "Lagmedlemmar" },
+ { key: "players", label: "Lagmedlemmar" },
   { key: "matches", label: "Matchlista" },
   { key: "lineup", label: "Laguppställning", disabled: !selectedMatch },
   { key: "export", label: "Whatsapp-export", disabled: !selectedMatch },
+  { key: "analysis", label: "AI analys" },
 ].map((tab) => {
               const isActive = activeTab === tab.key;
 
@@ -987,9 +1225,33 @@ export function TeamManagerApp() {
                               {player.lastName}
                             </p>
                             <p className="text-sm text-white/62">{player.firstName}</p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-white/60">
+                              <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1">
+                                Gula: {player.yellowCards ?? 0}
+                              </span>
+                              <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2 py-1">
+                                Röda: {player.redCards ?? 0}
+                              </span>
+                              {(player.traits ?? []).slice(0, 2).map((trait) => (
+                                <span
+                                  key={trait}
+                                  className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1"
+                                >
+                                  {trait}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                           <div className="w-[118px] shrink-0">
-                            <PlayerCard player={player} positionLabel="Squad" variant="compact" onDoubleClick={() => setSelectedPlayerForModal(player)} />
+                            <PlayerCard
+                              player={player}
+                              positionLabel="Squad"
+                              variant="compact"
+                              showName={player.smallCardShowName ?? true}
+                              showPosition={player.smallCardShowPosition ?? true}
+                              showNumber={player.smallCardShowNumber ?? true}
+                              onDoubleClick={() => setSelectedPlayerForModal({ ...player })}
+                            />
                           </div>
                         </div>
                       </button>
@@ -1082,30 +1344,45 @@ export function TeamManagerApp() {
               <div className="space-y-3">
   {state.matches.length > 0 ? (
     state.matches.map((match) => (
-      <button
-        type="button"
+      <div
         key={match.id}
         className={clsx(
-          "w-full rounded-[24px] border p-4 text-left transition",
+          "w-full rounded-[24px] border p-4 transition",
           state.selectedMatchId === match.id
             ? "border-amber-300/60 bg-amber-300/10"
             : "border-white/10 bg-white/6 hover:bg-white/10",
         )}
-        onClick={() =>
-          updateState((current) => ({ ...current, selectedMatchId: match.id }))
-        }
       >
-        <p className="text-xs uppercase tracking-[0.26em] text-white/55">
-          {formatShortDate(match.matchDate)}
-        </p>
-        <p className="mt-2 text-lg font-black uppercase tracking-[0.08em] text-white">
-          {match.opponentName}
-        </p>
-        <p className="mt-1 flex items-center gap-2 text-sm text-white/60">
-          <MapPin size={14} />
-          {match.location}
-        </p>
-      </button>
+        <div className="flex items-start justify-between gap-4">
+          <button
+            type="button"
+            className="min-w-0 flex-1 text-left"
+            onClick={() =>
+              updateState((current) => ({ ...current, selectedMatchId: match.id }))
+            }
+          >
+            <p className="text-xs uppercase tracking-[0.26em] text-white/55">
+              {formatShortDate(match.matchDate)}
+            </p>
+            <p className="mt-2 text-lg font-black uppercase tracking-[0.08em] text-white">
+              {match.opponentName}
+            </p>
+            <p className="mt-1 flex items-center gap-2 text-sm text-white/60">
+              <MapPin size={14} />
+              {match.location}
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMatchPendingDelete(match)}
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-rose-400/20 bg-rose-400/10 text-rose-100 transition hover:border-rose-300/40 hover:bg-rose-400/20"
+            aria-label={`Ta bort match mot ${match.opponentName}`}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
     ))
   ) : (
     <div className="rounded-[24px] border border-dashed border-white/12 px-5 py-8 text-sm text-white/55">
@@ -1324,7 +1601,7 @@ export function TeamManagerApp() {
                 <div>
                   <p className="text-xs uppercase tracking-[0.34em] text-amber-100/76">Laguppställning</p>
                   <h2 className="mt-2 text-3xl font-black uppercase tracking-[0.08em] text-white">
-                    Bygg startelvan visuellt
+                    Bygg startnian visuellt
                   </h2>
                   <p className="mt-2 text-white/60">
                     Välj formation, placera spelarkort och finjustera ytorna på planen.
@@ -1414,6 +1691,141 @@ export function TeamManagerApp() {
           </div>
         ) : null}
 
+       {activeTab === "analysis" ? (
+          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+            <div className="mb-4 flex items-center gap-3">
+              <Bot className="text-cyan-200" />
+              <div>
+                <h2 className="text-lg font-black uppercase tracking-[0.12em] text-white">
+                  AI analys
+                </h2>
+                <p className="text-sm text-white/60">
+                  Koppla Azure AI, välj matcher och be om konkreta rekommendationer.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
+              <div className="space-y-4 rounded-[28px] border border-white/10 bg-black/18 p-5">
+                <div className="space-y-3">
+                  <input
+                    value={aiSettings.endpoint}
+                    onChange={(event) => updateAiSettings({ endpoint: event.target.value })}
+                    placeholder="Azure endpoint"
+                    className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                  />
+                  <input
+                    value={aiSettings.deployment}
+                    onChange={(event) => updateAiSettings({ deployment: event.target.value })}
+                    placeholder="Deployment-namn"
+                    className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                  />
+                  <input
+                    type="password"
+                    value={aiSettings.apiKey}
+                    onChange={(event) => updateAiSettings({ apiKey: event.target.value })}
+                    placeholder="API-nyckel"
+                    className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                  />
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-[0.28em] text-white/50">Fråga till AI</p>
+                  <textarea
+                    value={aiSettings.question}
+                    onChange={(event) => updateAiSettings({ question: event.target.value })}
+                    rows={6}
+                    className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleRunAiAnalysis()}
+                  disabled={isAiLoading}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-cyan-300 px-5 py-3 font-black uppercase tracking-[0.16em] text-slate-950 disabled:opacity-60"
+                >
+                  {isAiLoading ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
+                  {isAiLoading ? "Analyserar..." : "Kör analys"}
+                </button>
+
+                <div className="rounded-[20px] border border-white/10 bg-white/6 p-4 text-sm leading-6 text-white/65">
+                  Matchernas formation, resultat, målskyttar, startnia, bänk och frånvarande skickas med i analysunderlaget.
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Välj matcher</p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {state.matches.map((match) => {
+                      const isSelected = aiSettings.selectedMatchIds.includes(match.id);
+
+                      return (
+                        <label
+                          key={match.id}
+                          className={clsx(
+                            "flex cursor-pointer items-start gap-3 rounded-[22px] border px-4 py-4 transition",
+                            isSelected
+                              ? "border-cyan-300/40 bg-cyan-300/10"
+                              : "border-white/10 bg-white/6 hover:bg-white/10",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(event) =>
+                              updateAiSettings({
+                                selectedMatchIds: event.target.checked
+                                  ? [...aiSettings.selectedMatchIds, match.id]
+                                  : aiSettings.selectedMatchIds.filter((id) => id !== match.id),
+                              })
+                            }
+                            className="mt-1 h-4 w-4 rounded border-white/20 bg-slate-900 text-cyan-400"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                              {match.opponentName}
+                            </p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-white/52">
+                              {formatShortDate(match.matchDate)} • {match.formationKey}
+                            </p>
+                            <p className="mt-2 text-sm text-white/62">{match.location}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {aiError ? (
+                  <div className="rounded-[24px] border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
+                    {aiError}
+                  </div>
+                ) : null}
+
+                <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Svar från AI</p>
+                    <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/52">
+                      {selectedAiMatches.length} valda matcher
+                    </span>
+                  </div>
+                  <div className="mt-4 min-h-[360px] rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm leading-7 text-white/80">
+                    {aiResponse ? (
+                      <pre className="whitespace-pre-wrap font-sans">{aiResponse}</pre>
+                    ) : (
+                      <p className="text-white/45">
+                        Välj matcher och kör analysen för att få konkreta förslag från AI.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
        {activeTab === "export" && selectedMatch ? (
           <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             <div className="mb-4 flex items-center gap-3">
@@ -1482,25 +1894,335 @@ export function TeamManagerApp() {
       </div>
 
       {selectedPlayerForModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setSelectedPlayerForModal(null)}>
-          <div className="relative w-full max-w-xl p-6 sm:p-8" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => setSelectedPlayerForModal(null)}
-              className="absolute -top-2 -right-2 rounded-full bg-white/10 p-2 text-white/70 hover:text-white"
-            >
-              ✕
-            </button>
-            <PlayerCard
-              player={selectedPlayerForModal}
-              positionLabel="Spelare"
-              variant="story"
-              enableZoom={false}
-              showFullImage
-            />
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 backdrop-blur-sm" onClick={() => setSelectedPlayerForModal(null)}>
+          <div className="relative z-[10000] w-full max-w-7xl p-4 sm:p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h1 className="text-xl font-black uppercase tracking-[0.22em] text-white">
+                Redigera spelare
+              </h1>
+              <button
+                type="button"
+                onClick={() => setSelectedPlayerForModal(null)}
+                className="rounded-full border border-white/10 bg-white/5 p-2 text-white/70 hover:border-white/30 hover:bg-white/10 transition"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="grid max-h-[calc(100vh-7rem)] gap-6 overflow-y-auto rounded-[32px] border border-white/10 bg-slate-950/95 p-5 shadow-[0_24px_64px_rgba(0,0,0,0.55)] xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="space-y-5">
+                <div className="text-center">
+                  <h2 className="text-lg font-black uppercase tracking-[0.22em] text-white">
+                    {selectedPlayerForModal.firstName} {selectedPlayerForModal.lastName}
+                  </h2>
+                  <p className="text-sm text-white/60">#{selectedPlayerForModal.number}</p>
+                </div>
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <div className="relative min-h-[420px] overflow-hidden rounded-[28px] border-2 border-cyan-400/70 bg-[radial-gradient(circle_at_top,rgba(8,145,178,0.2),transparent_34%),linear-gradient(180deg,#020617_0%,#06112a_60%,#020617_100%)]">
+                    {selectedPlayerForModal.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={selectedPlayerForModal.image}
+                        alt={`${selectedPlayerForModal.firstName} ${selectedPlayerForModal.lastName}`}
+                        className="absolute inset-0 h-full w-full object-contain object-center p-6"
+                      />
+                    ) : (
+                      <div className="flex min-h-[420px] items-center justify-center text-8xl font-black text-white/90">
+                        {`${selectedPlayerForModal.firstName?.[0] ?? "?"}${selectedPlayerForModal.lastName?.[0] ?? ""}`.toUpperCase()}
+                      </div>
+                    )}
+                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_0%,transparent_45%,rgba(2,6,23,0.18)_68%,rgba(2,6,23,0.88)_100%)]" />
+                    <div className="absolute left-4 top-4 rounded-full border border-cyan-300/50 bg-slate-950/88 px-3 py-2 text-lg font-black leading-none text-white shadow-[0_6px_18px_rgba(2,6,23,0.4)] backdrop-blur-sm">
+                      #{selectedPlayerForModal.number}
+                    </div>
+                    <div className="absolute inset-x-4 bottom-4 rounded-[24px] border border-white/10 bg-slate-950/88 px-4 py-4 text-white/95 backdrop-blur-md">
+                      <p className="text-xl font-black uppercase leading-none tracking-[0.08em] text-cyan-100">
+                        {selectedPlayerForModal.firstName} {selectedPlayerForModal.lastName}
+                      </p>
+                      <p className="mt-2 text-sm uppercase tracking-[0.24em] text-white/68">Spelare</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Förhandsvisning</p>
+                  <div className="mt-4 flex justify-center">
+                    <div className="w-[160px]">
+                      <PlayerCard
+                        player={selectedPlayerForModal}
+                        positionLabel="FW"
+                        variant="face"
+                        showName={selectedPlayerForModal.smallCardShowName ?? true}
+                        showPosition={selectedPlayerForModal.smallCardShowPosition ?? true}
+                        showNumber={selectedPlayerForModal.smallCardShowNumber ?? true}
+                        enableZoom={false}
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-3 text-center text-xs uppercase tracking-[0.24em] text-white/50">
+                    Så här ser det ut på planen
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Anpassa bildområde</p>
+                      <p className="mt-1 text-xs text-white/50">
+                        Markera området som ska visas på lilla kortet. Editorn använder nu hela arbetsytan.
+                      </p>
+                    </div>
+                    {selectedPlayerForModal.image ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedPlayerForModal((current) =>
+                            current ? { ...current, smallCardCropArea: { x: 50, y: 50, width: 100, height: 100 } } : current
+                          )
+                        }
+                        className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.16em] text-white/75 transition hover:border-white/20 hover:bg-white/10"
+                      >
+                        Återställ crop-område
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="mt-4">
+                    {selectedPlayerForModal.image ? (
+                      <div className="h-[min(62vh,720px)]">
+                        <ImageCropper
+                          imageUrl={selectedPlayerForModal.image}
+                          initialCrop={selectedPlayerForModal.smallCardCropArea || { x: 50, y: 50, width: 100, height: 100 }}
+                          onCropChange={(crop) =>
+                            setSelectedPlayerForModal((current) =>
+                              current ? { ...current, smallCardCropArea: crop } : current
+                            )
+                          }
+                          aspectRatio={1}
+                          minCropSize={30}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex h-[min(62vh,720px)] items-center justify-center rounded-[24px] bg-slate-800 text-white/60">
+                        Ingen bild uppladdad
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Spelarinformation</p>
+                  <div className="mt-4 space-y-3 text-white/80">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Namn</p>
+                      <p className="mt-1 text-lg font-black uppercase tracking-[0.06em] text-white">
+                        {selectedPlayerForModal.firstName} {selectedPlayerForModal.lastName}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Numero</p>
+                      <p className="mt-1 text-lg font-black uppercase tracking-[0.06em] text-white">
+                        #{selectedPlayerForModal.number}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Om kortet</p>
+                      <p className="mt-1 text-sm text-white/70">
+                        Här kan du anpassa hur spelaren visas på planen. Välj bildfokus och vilka delar som ska synas på lilla kortet.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Kort och attribut</p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4">
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-amber-100/70">Gula kort</p>
+                      <div className="mt-3 flex items-center gap-2">
+                        {[0, 1, 2, 3, 4].map((value) => (
+                          <button
+                            key={`yellow-${value}`}
+                            type="button"
+                            onClick={() =>
+                              setSelectedPlayerForModal((current) =>
+                                current ? { ...current, yellowCards: value } : current,
+                              )
+                            }
+                            className={clsx(
+                              "inline-flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-sm font-black transition",
+                              (selectedPlayerForModal.yellowCards ?? 0) === value
+                                ? "border-amber-300 bg-amber-300 text-slate-950"
+                                : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                            )}
+                          >
+                            {value}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-rose-400/20 bg-rose-400/10 p-4">
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-rose-100/70">Röda kort</p>
+                      <div className="mt-3 flex items-center gap-2">
+                        {[0, 1, 2].map((value) => (
+                          <button
+                            key={`red-${value}`}
+                            type="button"
+                            onClick={() =>
+                              setSelectedPlayerForModal((current) =>
+                                current ? { ...current, redCards: value } : current,
+                              )
+                            }
+                            className={clsx(
+                              "inline-flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-sm font-black transition",
+                              (selectedPlayerForModal.redCards ?? 0) === value
+                                ? "border-rose-300 bg-rose-400 text-white"
+                                : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                            )}
+                          >
+                            {value}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <p className="text-[10px] uppercase tracking-[0.24em] text-white/40">Personliga attribut</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {PLAYER_TRAIT_OPTIONS.map((trait) => {
+                        const isSelected = (selectedPlayerForModal.traits ?? []).includes(trait);
+
+                        return (
+                          <button
+                            key={trait}
+                            type="button"
+                            onClick={() =>
+                              setSelectedPlayerForModal((current) => {
+                                if (!current) {
+                                  return current;
+                                }
+
+                                const traits = current.traits ?? [];
+                                return {
+                                  ...current,
+                                  traits: isSelected
+                                    ? traits.filter((entry) => entry !== trait)
+                                    : [...traits, trait],
+                                };
+                              })
+                            }
+                            className={clsx(
+                              "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                              isSelected
+                                ? "border-cyan-300/40 bg-cyan-300/20 text-cyan-100"
+                                : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                            )}
+                          >
+                            {trait}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-white/10 bg-slate-900/90 p-4">
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Visa på lilla kortet</p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    {[
+                      { key: "smallCardShowName", label: "Visa namn" },
+                      { key: "smallCardShowPosition", label: "Visa position" },
+                      { key: "smallCardShowNumber", label: "Visa nummer" },
+                    ].map((field) => (
+                      <label key={field.key} className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/80 transition cursor-pointer hover:border-white/20 hover:bg-white/10">
+                        <input
+                          type="checkbox"
+                          checked={Boolean((selectedPlayerForModal as any)[field.key])}
+                          onChange={(event) =>
+                            setSelectedPlayerForModal((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    [field.key]: event.target.checked,
+                                  }
+                                : current,
+                            )
+                          }
+                          className="h-5 w-5 rounded border-white/20 bg-slate-900 text-cyan-400 focus:ring-2 focus:ring-cyan-400"
+                        />
+                        <span className="font-medium">{field.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={saveModalPlayer}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-cyan-400 px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-cyan-300"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Spara inställningar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlayerForModal(null)}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-white/80 transition hover:border-white/20 hover:bg-white/10"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Stäng
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {matchPendingDelete ? (
+        <div
+          className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          onClick={() => setMatchPendingDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-[32px] border border-white/10 bg-slate-950/95 p-6 shadow-[0_24px_64px_rgba(0,0,0,0.55)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-xs uppercase tracking-[0.3em] text-rose-200/70">Ta bort match</p>
+            <h2 className="mt-3 text-2xl font-black uppercase tracking-[0.08em] text-white">
+              {matchPendingDelete.opponentName}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-white/70">
+              Är du säker på att du vill ta bort den här matchen? Uppställning, bänk, frånvarande och målstatistik för matchen försvinner också.
+            </p>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => handleDeleteMatch(matchPendingDelete.id)}
+                className="inline-flex flex-1 items-center justify-center rounded-full bg-rose-500 px-5 py-3 text-sm font-black uppercase tracking-[0.16em] text-white transition hover:bg-rose-400"
+              >
+                Ta bort
+              </button>
+              <button
+                type="button"
+                onClick={() => setMatchPendingDelete(null)}
+                className="inline-flex flex-1 items-center justify-center rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-black uppercase tracking-[0.16em] text-white/80 transition hover:border-white/20 hover:bg-white/10"
+              >
+                Avbryt
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <DragOverlay>
         {activeDragPlayerId ? (

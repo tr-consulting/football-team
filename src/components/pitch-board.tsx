@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import clsx from "clsx";
-import { Grip, RotateCcw } from "lucide-react";
+import { Grip, RotateCcw, Settings2 } from "lucide-react";
 
 import { PlayerCard } from "@/components/player-card";
 import { LineupSlot, Player } from "@/lib/types";
@@ -113,7 +113,7 @@ function SlotDropZone({
       <div
         ref={cardRef}
         className={clsx(
-          "relative transition duration-200",
+          "group relative transition duration-200",
           isOver && "scale-[1.04]",
           isMoving && "cursor-grabbing",
         )}
@@ -122,19 +122,36 @@ function SlotDropZone({
           transformOrigin: "center bottom",
         }}
       >
-        <div className="absolute inset-x-6 bottom-8 h-5 rounded-full bg-black/35 blur-md" />
-        <PlayerCard player={player} positionLabel={slot.positionLabel} isEmpty={!player} variant="face" onDoubleClick={onDoubleClick} />
+        <div className="absolute inset-x-5 bottom-5 h-4 rounded-full bg-black/30 blur-md" />
+        <PlayerCard
+          player={player}
+          positionLabel={slot.positionLabel}
+          showName={player?.smallCardShowName ?? true}
+          showPosition={player?.smallCardShowPosition ?? true}
+          showNumber={player?.smallCardShowNumber ?? true}
+          isEmpty={!player}
+          variant="face"
+          onDoubleClick={onDoubleClick}
+        />
 
         {player ? (
-          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-3 w-[220px] text-white">
-            <div className="flex items-center justify-between gap-2 rounded-full border border-white/10 bg-slate-950/72 px-3 py-2 shadow-[0_10px_20px_rgba(3,7,18,0.2)] backdrop-blur-sm">
+          <div className="absolute left-1/2 top-full z-20 -translate-x-1/2 mt-2.5 w-[160px] text-white">
+            <div
+              className={clsx(
+                "flex items-center justify-center gap-2 rounded-full border border-white/10 bg-slate-950/78 px-2 py-2 shadow-[0_10px_20px_rgba(3,7,18,0.2)] backdrop-blur-sm transition",
+                isOptionsOpen || isMoving
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
+              )}
+            >
               <button
                 type="button"
-                className="flex-1 text-left text-[10px] font-semibold uppercase tracking-[0.24em] text-white transition hover:text-amber-200"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/6 text-white/75 transition hover:text-white"
                 onClick={() => setIsOptionsOpen((value) => !value)}
                 aria-expanded={isOptionsOpen}
+                aria-label={`Inställningar för ${slot.positionLabel}`}
               >
-                Flytta
+                <Settings2 size={14} />
               </button>
               <button
                 type="button"
@@ -166,7 +183,7 @@ function SlotDropZone({
             </div>
 
             {isOptionsOpen ? (
-              <div className="mt-2 rounded-[22px] border border-white/10 bg-slate-950/88 p-3 shadow-[0_14px_36px_rgba(3,7,18,0.3)] backdrop-blur-sm">
+              <div className="mt-2 rounded-[22px] border border-white/10 bg-slate-950/92 p-3 shadow-[0_14px_36px_rgba(3,7,18,0.3)] backdrop-blur-sm">
                 <label className="mb-2 block text-[10px] uppercase tracking-[0.22em] text-white/60">
                   Byt spelare
                 </label>
@@ -179,6 +196,7 @@ function SlotDropZone({
                   {players.map((availablePlayer) => (
                     <option key={availablePlayer.id} value={availablePlayer.id}>
                       #{availablePlayer.number} {availablePlayer.firstName} {availablePlayer.lastName}
+                      {availablePlayer.squadStatus === "borrowed" ? " (lån)" : ""}
                     </option>
                   ))}
                 </select>
@@ -193,7 +211,7 @@ function SlotDropZone({
             ) : null}
           </div>
         ) : (
-          <div className="mt-2 rounded-full border border-dashed border-white/14 bg-slate-950/60 px-4 py-2 text-center text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56 shadow-[0_14px_22px_rgba(3,7,18,0.22)] backdrop-blur-sm">
+          <div className="mt-1.5 rounded-full border border-dashed border-white/14 bg-slate-950/60 px-3 py-1.5 text-center text-[9px] font-semibold uppercase tracking-[0.2em] text-white/56 shadow-[0_14px_22px_rgba(3,7,18,0.22)] backdrop-blur-sm">
             Dra hit spelare
           </div>
         )}

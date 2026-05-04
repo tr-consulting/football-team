@@ -3,7 +3,18 @@ import type { User } from "@supabase/supabase-js";
 import { createLineupSlots, DEFAULT_FORMATION_KEY } from "@/lib/formations";
 import { defaultTeamState } from "@/lib/storage";
 import { supabase } from "@/lib/supabase";
-import { LineupSlot, MatchGoalScorer, MatchRecord, Player, Team, TeamAppState } from "@/lib/types";
+import {
+  LineupSlot,
+  MatchGoalScorer,
+  MatchPlayerAttributes,
+  MatchRecord,
+  MatchType,
+  Player,
+  PlayerSquadStatus,
+  PlayerTrait,
+  Team,
+  TeamAppState,
+} from "@/lib/types";
 
 type TeamRow = {
   id: string;
@@ -21,7 +32,12 @@ type PlayerRow = {
   first_name: string;
   last_name: string;
   number: string;
+  squad_status?: PlayerSquadStatus | null;
   image_path: string | null;
+  small_card_crop_area: any;
+  yellow_cards?: number | null;
+  red_cards?: number | null;
+  traits?: PlayerTrait[] | null;
   created_at: string;
 };
 
@@ -29,6 +45,7 @@ type MatchRow = {
   id: string;
   team_id: string;
   match_date: string;
+  match_type?: MatchType | null;
   opponent_name: string;
   location: string;
   formation_key: string;
@@ -60,6 +77,56 @@ type MatchGoalScorerRow = {
   goals: number;
 };
 
+type MatchPlayerAttributesRow = {
+  match_id: string;
+  player_id: string;
+  yellow_cards: number | null;
+  red_cards: number | null;
+  traits: PlayerTrait[] | null;
+  comment: string | null;
+};
+
+function isMissingColumnError(error: unknown, columnName: string) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return (
+    message.includes(`column ${columnName} does not exist`) ||
+    message.includes(`Could not find the '${columnName.split(".").pop()}' column`) ||
+    message.includes(`Could not find the '${columnName}' column`)
+  );
+}
+
+function isMissingPlayerProfileColumn(error: unknown) {
+  return (
+    isMissingColumnError(error, "players.squad_status") ||
+    isMissingColumnError(error, "players.small_card_crop_area") ||
+    isMissingColumnError(error, "players.yellow_cards") ||
+    isMissingColumnError(error, "players.red_cards") ||
+    isMissingColumnError(error, "players.traits")
+  );
+}
+
+function isMissingMatchTypeColumn(error: unknown) {
+  return isMissingColumnError(error, "matches.match_type");
+}
+
+function isMissingMatchPlayerAttributesTable(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return (
+    message.includes("Could not find the table 'public.match_player_attributes' in the schema cache") ||
+    message.includes("Could not find the table 'match_player_attributes' in the schema cache") ||
+    message.includes("relation \"public.match_player_attributes\" does not exist") ||
+    message.includes("relation \"match_player_attributes\" does not exist")
+  );
+}
+
 function assertSupabase() {
   if (!supabase) {
     throw new Error("Supabase är inte konfigurerat.");
@@ -73,6 +140,7 @@ function createInitialMatch(teamId: string): MatchRecord {
     id: crypto.randomUUID(),
     teamId,
     matchDate: new Date().toISOString().slice(0, 16),
+    matchType: "league",
     opponentName: "Kommande motstånd",
     location: "Hemmaplan",
     formationKey: DEFAULT_FORMATION_KEY,
@@ -80,6 +148,7 @@ function createInitialMatch(teamId: string): MatchRecord {
     lineupSlots: createLineupSlots(DEFAULT_FORMATION_KEY),
     benchPlayerIds: [],
     unavailablePlayerIds: [],
+    playerAttributes: [],
     createdAt: new Date().toISOString(),
   };
 }
@@ -100,7 +169,12 @@ function mapPlayer(row: PlayerRow): Player {
     firstName: row.first_name,
     lastName: row.last_name,
     number: row.number,
+    squadStatus: row.squad_status ?? "regular",
     image: row.image_path ?? undefined,
+    smallCardCropArea: row.small_card_crop_area,
+    yellowCards: row.yellow_cards ?? 0,
+    redCards: row.red_cards ?? 0,
+    traits: row.traits ?? [],
     createdAt: row.created_at,
   };
 }
@@ -123,11 +197,13 @@ function mapMatch(
   benchRows: MatchPlayerRow[],
   unavailableRows: MatchPlayerRow[],
   scorerRows: MatchGoalScorerRow[],
+  attributeRows: MatchPlayerAttributesRow[],
 ): MatchRecord {
   return {
     id: row.id,
     teamId: row.team_id,
     matchDate: row.match_date,
+    matchType: row.match_type ?? "league",
     opponentName: row.opponent_name,
     location: row.location,
     formationKey: row.formation_key,
@@ -150,6 +226,17 @@ function mapMatch(
         (entry): MatchGoalScorer => ({
           playerId: entry.player_id,
           goals: Number(entry.goals),
+        }),
+      ),
+    playerAttributes: attributeRows
+      .filter((entry) => entry.match_id === row.id)
+      .map(
+        (entry): MatchPlayerAttributes => ({
+          playerId: entry.player_id,
+          yellowCards: entry.yellow_cards ?? 0,
+          redCards: entry.red_cards ?? 0,
+          traits: entry.traits ?? [],
+          comment: entry.comment ?? "",
         }),
       ),
     createdAt: row.created_at,
@@ -269,23 +356,61 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
   const teamRow = await ensureLeaderTeam(user);
   const team = mapTeam(teamRow);
 
-  const { data: playersData, error: playersError } = await client
+  const playersWithCropQuery = client
     .from("players")
-    .select("id, team_id, first_name, last_name, number, image_path, created_at")
-    .eq("team_id", team.id)
-    .order("created_at", { ascending: true });
+    .select(
+      "id, team_id, first_name, last_name, number, squad_status, image_path, small_card_crop_area, yellow_cards, red_cards, traits, created_at",
+    )
+    .eq("team_id", team.id);
+
+  let playersData: unknown[] | null = null;
+  let playersError: unknown = null;
+
+  const playersWithCropResult = await playersWithCropQuery.order("created_at", { ascending: true });
+  if (playersWithCropResult.error && isMissingPlayerProfileColumn(playersWithCropResult.error)) {
+    const fallbackPlayersResult = await client
+      .from("players")
+      .select("id, team_id, first_name, last_name, number, image_path, created_at")
+      .eq("team_id", team.id)
+      .order("created_at", { ascending: true });
+
+    playersData = fallbackPlayersResult.data as unknown[] | null;
+    playersError = fallbackPlayersResult.error;
+  } else {
+    playersData = playersWithCropResult.data as unknown[] | null;
+    playersError = playersWithCropResult.error;
+  }
 
   if (playersError) {
     throw playersError;
   }
 
-  const { data: matchesData, error: matchesError } = await client
+  const matchesWithTypeResult = await client
     .from("matches")
     .select(
-      "id, team_id, match_date, opponent_name, location, formation_key, status, home_score, away_score, created_at",
+      "id, team_id, match_date, match_type, opponent_name, location, formation_key, status, home_score, away_score, created_at",
     )
     .eq("team_id", team.id)
     .order("match_date", { ascending: true });
+
+  let matchesData = matchesWithTypeResult.data as MatchRow[] | null;
+  let matchesError: unknown = matchesWithTypeResult.error;
+
+  if (matchesWithTypeResult.error && isMissingMatchTypeColumn(matchesWithTypeResult.error)) {
+    const fallbackMatchesResult = await client
+      .from("matches")
+      .select(
+        "id, team_id, match_date, opponent_name, location, formation_key, status, home_score, away_score, created_at",
+      )
+      .eq("team_id", team.id)
+      .order("match_date", { ascending: true });
+
+    matchesData = (fallbackMatchesResult.data ?? []).map((match) => ({
+      ...(match as Omit<MatchRow, "match_type">),
+      match_type: "league" as MatchType,
+    }));
+    matchesError = fallbackMatchesResult.error;
+  }
 
   if (matchesError) {
     throw matchesError;
@@ -293,7 +418,7 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
 
   const matchIds = (matchesData ?? []).map((match) => match.id);
 
-  const [slotsResult, benchResult, unavailableResult, scorersResult] = await Promise.all([
+  const [slotsResult, benchResult, unavailableResult, scorersResult, attributesResult] = await Promise.all([
     matchIds.length
       ? client
           .from("match_lineup_slots")
@@ -320,6 +445,12 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
           .select("match_id, player_id, goals")
           .in("match_id", matchIds)
       : Promise.resolve({ data: [], error: null }),
+    matchIds.length
+      ? client
+          .from("match_player_attributes")
+          .select("match_id, player_id, yellow_cards, red_cards, traits, comment")
+          .in("match_id", matchIds)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (slotsResult.error) {
@@ -338,6 +469,10 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
     throw scorersResult.error;
   }
 
+  if (attributesResult.error && !isMissingMatchPlayerAttributesTable(attributesResult.error)) {
+    throw attributesResult.error;
+  }
+
   const players = (playersData ?? []).map((row) => mapPlayer(row as PlayerRow));
   const matches = (matchesData ?? []).map((row) =>
     mapMatch(
@@ -346,6 +481,7 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
       (benchResult.data ?? []) as MatchPlayerRow[],
       (unavailableResult.data ?? []) as MatchPlayerRow[],
       (scorersResult.data ?? []) as MatchGoalScorerRow[],
+      (attributesResult.data ?? []) as MatchPlayerAttributesRow[],
     ),
   );
 
@@ -375,23 +511,26 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
 export async function persistRemoteTeamState(state: TeamAppState) {
   const client = assertSupabase();
 
-  const { error: teamError } = await client
-    .from("teams")
-    .update({
-      name: state.team.name,
-      season: state.team.season,
-      accent: state.team.accent,
-      selected_match_id: state.selectedMatchId,
-    })
-    .eq("id", state.team.id);
-
-  if (teamError) {
-    throw teamError;
-  }
-
   if (state.players.length > 0) {
-    const { error: playerUpsertError } = await client.from("players").upsert(
-      state.players.map((player) => ({
+    const playerRows = state.players.map((player) => ({
+      id: player.id,
+      team_id: state.team.id,
+      first_name: player.firstName,
+      last_name: player.lastName,
+      number: player.number,
+      squad_status: player.squadStatus ?? "regular",
+      image_path: player.image ?? null,
+      small_card_crop_area: player.smallCardCropArea,
+      yellow_cards: player.yellowCards ?? 0,
+      red_cards: player.redCards ?? 0,
+      traits: player.traits ?? [],
+      created_at: player.createdAt,
+    }));
+
+    const { error: playerUpsertError } = await client.from("players").upsert(playerRows);
+
+    if (playerUpsertError && isMissingPlayerProfileColumn(playerUpsertError)) {
+      const fallbackRows = state.players.map((player) => ({
         id: player.id,
         team_id: state.team.id,
         first_name: player.firstName,
@@ -399,10 +538,14 @@ export async function persistRemoteTeamState(state: TeamAppState) {
         number: player.number,
         image_path: player.image ?? null,
         created_at: player.createdAt,
-      })),
-    );
+      }));
 
-    if (playerUpsertError) {
+      const { error: fallbackPlayerUpsertError } = await client.from("players").upsert(fallbackRows);
+
+      if (fallbackPlayerUpsertError) {
+        throw fallbackPlayerUpsertError;
+      }
+    } else if (playerUpsertError) {
       throw playerUpsertError;
     }
   }
@@ -437,6 +580,7 @@ export async function persistRemoteTeamState(state: TeamAppState) {
         id: match.id,
         team_id: state.team.id,
         match_date: match.matchDate,
+        match_type: match.matchType ?? "league",
         opponent_name: match.opponentName,
         location: match.location,
         formation_key: match.formationKey,
@@ -447,7 +591,26 @@ export async function persistRemoteTeamState(state: TeamAppState) {
       })),
     );
 
-    if (matchUpsertError) {
+    if (matchUpsertError && isMissingMatchTypeColumn(matchUpsertError)) {
+      const { error: fallbackMatchUpsertError } = await client.from("matches").upsert(
+        state.matches.map((match) => ({
+          id: match.id,
+          team_id: state.team.id,
+          match_date: match.matchDate,
+          opponent_name: match.opponentName,
+          location: match.location,
+          formation_key: match.formationKey,
+          status: match.status,
+          home_score: match.homeScore ?? null,
+          away_score: match.awayScore ?? null,
+          created_at: match.createdAt,
+        })),
+      );
+
+      if (fallbackMatchUpsertError) {
+        throw fallbackMatchUpsertError;
+      }
+    } else if (matchUpsertError) {
       throw matchUpsertError;
     }
   }
@@ -479,14 +642,29 @@ export async function persistRemoteTeamState(state: TeamAppState) {
   const currentMatchIds = state.matches.map((match) => match.id);
 
   if (currentMatchIds.length === 0) {
+    const { error: teamError } = await client
+      .from("teams")
+      .update({
+        name: state.team.name,
+        season: state.team.season,
+        accent: state.team.accent,
+        selected_match_id: null,
+      })
+      .eq("id", state.team.id);
+
+    if (teamError) {
+      throw teamError;
+    }
+
     return;
   }
 
-  const [deleteSlots, deleteBench, deleteUnavailable, deleteScorers] = await Promise.all([
+  const [deleteSlots, deleteBench, deleteUnavailable, deleteScorers, deleteAttributes] = await Promise.all([
     client.from("match_lineup_slots").delete().in("match_id", currentMatchIds),
     client.from("match_bench_players").delete().in("match_id", currentMatchIds),
     client.from("match_unavailable_players").delete().in("match_id", currentMatchIds),
     client.from("match_goal_scorers").delete().in("match_id", currentMatchIds),
+    client.from("match_player_attributes").delete().in("match_id", currentMatchIds),
   ]);
 
   if (deleteSlots.error) {
@@ -503,6 +681,10 @@ export async function persistRemoteTeamState(state: TeamAppState) {
 
   if (deleteScorers.error) {
     throw deleteScorers.error;
+  }
+
+  if (deleteAttributes.error && !isMissingMatchPlayerAttributesTable(deleteAttributes.error)) {
+    throw deleteAttributes.error;
   }
 
   const lineupRows = state.matches.flatMap((match) =>
@@ -578,5 +760,45 @@ export async function persistRemoteTeamState(state: TeamAppState) {
     if (insertScorersError) {
       throw insertScorersError;
     }
+  }
+
+  const attributeRows = state.matches.flatMap((match) =>
+    (match.playerAttributes ?? []).map((entry) => ({
+      match_id: match.id,
+      player_id: entry.playerId,
+      yellow_cards: entry.yellowCards ?? 0,
+      red_cards: entry.redCards ?? 0,
+      traits: entry.traits ?? [],
+      comment: entry.comment?.trim() ?? "",
+    })),
+  );
+
+  if (attributeRows.length > 0) {
+    const { error: insertAttributesError } = await client
+      .from("match_player_attributes")
+      .insert(attributeRows);
+
+    if (insertAttributesError && !isMissingMatchPlayerAttributesTable(insertAttributesError)) {
+      throw insertAttributesError;
+    }
+  }
+
+  const selectedMatchId =
+    state.selectedMatchId && currentMatchIds.includes(state.selectedMatchId)
+      ? state.selectedMatchId
+      : currentMatchIds[0] ?? null;
+
+  const { error: teamError } = await client
+    .from("teams")
+    .update({
+      name: state.team.name,
+      season: state.team.season,
+      accent: state.team.accent,
+      selected_match_id: selectedMatchId,
+    })
+    .eq("id", state.team.id);
+
+  if (teamError) {
+    throw teamError;
   }
 }

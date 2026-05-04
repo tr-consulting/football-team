@@ -14,6 +14,18 @@ function getDepthScale(y: number) {
   return 0.62 + y / 360;
 }
 
+function getMatchTypeLabel(matchType = "league") {
+  if (matchType === "friendly") {
+    return "Träningsmatch";
+  }
+
+  if (matchType === "cup") {
+    return "Annan cup";
+  }
+
+  return "Seriespel";
+}
+
 export function ExportStory({
   team,
   match,
@@ -67,6 +79,9 @@ export function ExportStory({
           </p>
           <p className="mt-4 inline-flex rounded-full border border-[#f3db95]/28 bg-[#f3db95]/14 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-[#f8e7ae]">
             {formationLabel}
+          </p>
+          <p className="mt-3 inline-flex rounded-full border border-emerald-200/24 bg-emerald-200/12 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-emerald-100">
+            {getMatchTypeLabel(match.matchType)}
           </p>
           {match.homeScore !== undefined || match.awayScore !== undefined ? (
             <p className="mt-4 text-2xl font-black uppercase tracking-[0.08em] text-white">
@@ -173,12 +188,17 @@ export function ExportStory({
                 }}
               >
                 <div className="absolute inset-x-8 bottom-6 h-4 rounded-full bg-black/35 blur-md" />
-                <PlayerCard
-                  player={player}
-                  positionLabel={slot.positionLabel}
-                  variant="story"
-                  isEmpty={!player}
-                />
+                <div className="scale-[1.95] origin-center">
+                  <PlayerCard
+                    player={player}
+                    positionLabel={slot.positionLabel}
+                    variant="face"
+                    showName={player?.smallCardShowName ?? true}
+                    showPosition={player?.smallCardShowPosition ?? true}
+                    showNumber={player?.smallCardShowNumber ?? true}
+                    isEmpty={!player}
+                  />
+                </div>
               </div>
             );
           })}

@@ -21,11 +21,41 @@ create table if not exists public.players (
   number text not null,
   squad_status text not null default 'regular',
   image_path text,
+  small_card_crop_area jsonb,
+  small_card_show_name boolean not null default true,
+  small_card_show_position boolean not null default true,
+  small_card_show_number boolean not null default true,
+  large_card_image_focus text not null default 'full',
+  yellow_cards integer not null default 0,
+  red_cards integer not null default 0,
+  traits jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
 
 alter table public.players
-  add column if not exists squad_status text not null default 'regular';
+  add column if not exists squad_status text not null default 'regular',
+  add column if not exists small_card_show_name boolean not null default true,
+  add column if not exists small_card_show_position boolean not null default true,
+  add column if not exists small_card_show_number boolean not null default true,
+  add column if not exists large_card_image_focus text not null default 'full',
+  add column if not exists yellow_cards integer not null default 0,
+  add column if not exists red_cards integer not null default 0,
+  add column if not exists traits jsonb not null default '[]'::jsonb;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'players_large_card_image_focus_check'
+      and conrelid = 'public.players'::regclass
+  ) then
+    alter table public.players
+      add constraint players_large_card_image_focus_check
+      check (large_card_image_focus in ('full', 'torso', 'face'));
+  end if;
+end
+$$;
 
 do $$
 begin

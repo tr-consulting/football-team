@@ -1,9 +1,29 @@
 export type MatchStatus = "draft" | "ready";
 
+export type MatchType = "league" | "friendly" | "cup";
+
+export type PlayerSquadStatus = "regular" | "borrowed";
+
 export type MatchGoalScorer = {
   playerId: string;
   goals: number;
 };
+
+export type MatchPlayerAttributes = {
+  playerId: string;
+  yellowCards?: number;
+  redCards?: number;
+  traits?: PlayerTrait[];
+  comment?: string;
+};
+
+export type PlayerTrait =
+  | "Peppande"
+  | "Utstrålar glädje"
+  | "Ledare"
+  | "Lugn under press"
+  | "Kommunikativ"
+  | "Vinnarskalle";
 
 export type Player = {
   id: string;
@@ -11,7 +31,23 @@ export type Player = {
   firstName: string;
   lastName: string;
   number: string;
+  squadStatus?: PlayerSquadStatus;
   image?: string;
+  smallCardCropArea?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    imageWidth?: number;
+    imageHeight?: number;
+  };
+  smallCardShowName?: boolean;
+  smallCardShowPosition?: boolean;
+  smallCardShowNumber?: boolean;
+  largeCardImageFocus?: "full" | "torso" | "face";
+  yellowCards?: number;
+  redCards?: number;
+  traits?: PlayerTrait[];
   createdAt: string;
 };
 
@@ -46,6 +82,7 @@ export type MatchRecord = {
   id: string;
   teamId: string;
   matchDate: string;
+  matchType: MatchType;
   opponentName: string;
   location: string;
   formationKey: string;
@@ -56,6 +93,7 @@ export type MatchRecord = {
   homeScore?: number;
   awayScore?: number;
   goalScorers?: MatchGoalScorer[];
+  playerAttributes?: MatchPlayerAttributes[];
   createdAt: string;
 };
 
@@ -77,4 +115,12 @@ export type TeamAppState = {
   players: Player[];
   matches: MatchRecord[];
   selectedMatchId: string | null;
+};
+
+export type AiAnalysisSettings = {
+  endpoint: string;
+  deployment: string;
+  apiKey: string;
+  selectedMatchIds: string[];
+  question: string;
 };
