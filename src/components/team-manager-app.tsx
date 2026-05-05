@@ -59,6 +59,7 @@ import {
 import { supabaseConfigured } from "@/lib/supabase";
 import {
   AiAnalysisSettings,
+  MatchPlayerAttributes,
   MatchRecord,
   MatchType,
   Player,
@@ -86,6 +87,7 @@ type MatchFormState = {
 
 type StudioTab = "players" | "matches" | "lineup" | "stats" | "export" | "analysis";
 type StatsMatchTypeFilter = "all" | MatchType;
+type StatsSortMetric = "goals" | "yellowCards" | "redCards";
 
 const PLAYER_TRAIT_OPTIONS: PlayerTrait[] = [
   "Peppande",
@@ -122,6 +124,16 @@ const MATCH_TYPE_OPTIONS: Array<{
 const STATS_MATCH_TYPE_FILTER_OPTIONS: Array<{ key: StatsMatchTypeFilter; label: string }> = [
   { key: "all", label: "Alla matcher" },
   ...MATCH_TYPE_OPTIONS.map((option) => ({ key: option.key, label: option.label })),
+];
+
+const STATS_SORT_OPTIONS: Array<{
+  key: StatsSortMetric;
+  label: string;
+  valueLabel: string;
+}> = [
+  { key: "goals", label: "Mål", valueLabel: "mål" },
+  { key: "yellowCards", label: "Gula kort", valueLabel: "gula" },
+  { key: "redCards", label: "Röda kort", valueLabel: "röda" },
 ];
 
 const emptyPlayerForm: PlayerFormState = {
@@ -173,6 +185,18 @@ function getMatchTypeShortLabel(matchType: MatchType = "league") {
 
 function getPlayerSquadStatusLabel(status: PlayerSquadStatus = "regular") {
   return PLAYER_SQUAD_STATUS_OPTIONS.find((option) => option.key === status)?.label ?? "Ordinarie trupp";
+}
+
+function getMatchPlayerAttributes(match: MatchRecord, playerId: string): MatchPlayerAttributes {
+  return (
+    match.playerAttributes?.find((entry) => entry.playerId === playerId) ?? {
+      playerId,
+      yellowCards: 0,
+      redCards: 0,
+      traits: [],
+      comment: "",
+    }
+  );
 }
 
 function removePlayerEverywhere(match: MatchRecord, playerId: string): MatchRecord {
@@ -551,6 +575,7 @@ export function TeamManagerApp() {
   const [activeTab, setActiveTab] = useState<StudioTab>("players");
   const [statsMatchTypeFilter, setStatsMatchTypeFilter] =
     useState<StatsMatchTypeFilter>("all");
+  const [statsSortMetric, setStatsSortMetric] = useState<StatsSortMetric>("goals");
 
   const playerMap = useMemo(
     () => new Map(state.players.map((player) => [player.id, player])),
@@ -659,6 +684,133 @@ export function TeamManagerApp() {
         .filter((entry): entry is { player: Player; goals: number; matches: number } => Boolean(entry)),
     );
   }, [playerMap, statsMatches]);
+
+  const statsLeaders = useMemo(() => {
+    const totals = new Map<
+      string,
+      {
+        goals: number;
+        yellowCards: number;
+        redCards: number;
+        goalMatches: number;
+        cardMatches: number;
+      }
+    >();
+
+    for (const match of statsMatches) {
+      for (const scorer of match.goalScorers ?? []) {
+        const current = totals.get(scorer.playerId) ?? {
+          goals: 0,
+          yellowCards: 0,
+          redCards: 0,
+          goalMatches: 0,
+          cardMatches: 0,
+        };
+        totals.set(scorer.playerId, {
+          ...current,
+          goals: current.goals + scorer.goals,
+          goalMatches: current.goalMatches + 1,
+        });
+      }
+
+      for (const attributes of match.playerAttributes ?? []) {
+        const yellowCards = attributes.yellowCards ?? 0;
+        const redCards = attributes.redCards ?? 0;
+        if (yellowCards <= 0 && redCards <= 0) {
+          continue;
+        }
+
+        const current = totals.get(attributes.playerId) ?? {
+          goals: 0,
+          yellowCards: 0,
+          redCards: 0,
+          goalMatches: 0,
+          cardMatches: 0,
+        };
+        totals.set(attributes.playerId, {
+          ...current,
+          yellowCards: current.yellowCards + yellowCards,
+          redCards: current.redCards + redCards,
+          cardMatches: current.cardMatches + 1,
+        });
+      }
+    }
+
+    if (
+      statsMatchTypeFilter === "all" &&
+      [...totals.values()].every((entry) => entry.yellowCards === 0 && entry.redCards === 0)
+    ) {
+      for (const player of state.players) {
+        const yellowCards = player.yellowCards ?? 0;
+        const redCards = player.redCards ?? 0;
+        if (yellowCards <= 0 && redCards <= 0) {
+          continue;
+        }
+
+        const current = totals.get(player.id) ?? {
+          goals: 0,
+          yellowCards: 0,
+          redCards: 0,
+          goalMatches: 0,
+          cardMatches: 0,
+        };
+        totals.set(player.id, {
+          ...current,
+          yellowCards,
+          redCards,
+          cardMatches: yellowCards > 0 || redCards > 0 ? 1 : 0,
+        });
+      }
+    }
+
+    return [...totals.entries()]
+      .map(([playerId, totalsForPlayer]) => {
+        const player = playerMap.get(playerId);
+        if (!player) {
+          return null;
+        }
+
+        return {
+          player,
+          ...totalsForPlayer,
+        };
+      })
+      .filter(
+        (
+          entry,
+        ): entry is {
+          player: Player;
+          goals: number;
+          yellowCards: number;
+          redCards: number;
+          goalMatches: number;
+          cardMatches: number;
+        } => Boolean(entry),
+      )
+      .filter((entry) => entry[statsSortMetric] > 0)
+      .sort((a, b) => {
+        if (b[statsSortMetric] !== a[statsSortMetric]) {
+          return b[statsSortMetric] - a[statsSortMetric];
+        }
+
+        if (b.goals !== a.goals) {
+          return b.goals - a.goals;
+        }
+
+        if (b.yellowCards !== a.yellowCards) {
+          return b.yellowCards - a.yellowCards;
+        }
+
+        if (b.redCards !== a.redCards) {
+          return b.redCards - a.redCards;
+        }
+
+        return a.player.lastName.localeCompare(b.player.lastName, "sv");
+      });
+  }, [playerMap, state.players, statsMatches, statsMatchTypeFilter, statsSortMetric]);
+
+  const statsSortOption =
+    STATS_SORT_OPTIONS.find((option) => option.key === statsSortMetric) ?? STATS_SORT_OPTIONS[0];
   const selectedAiMatches = useMemo(
     () => state.matches.filter((match) => aiSettings.selectedMatchIds.includes(match.id)),
     [aiSettings.selectedMatchIds, state.matches],
@@ -689,6 +841,27 @@ export function TeamManagerApp() {
         match.id === selectedMatch.id ? updater(match) : match,
       ),
     }));
+  }
+
+  function updateMatchPlayerAttributes(
+    playerId: string,
+    updater: (current: MatchPlayerAttributes) => MatchPlayerAttributes,
+  ) {
+    updateSelectedMatch((match) => {
+      const current = getMatchPlayerAttributes(match, playerId);
+      const updated = updater(current);
+      const remaining = (match.playerAttributes ?? []).filter((entry) => entry.playerId !== playerId);
+      const hasValues =
+        (updated.yellowCards ?? 0) > 0 ||
+        (updated.redCards ?? 0) > 0 ||
+        (updated.traits?.length ?? 0) > 0 ||
+        Boolean(updated.comment?.trim());
+
+      return {
+        ...match,
+        playerAttributes: hasValues ? [...remaining, updated] : remaining,
+      };
+    });
   }
 
   function updatePlayer(playerId: string, patch: Partial<Player>) {
@@ -1683,9 +1856,9 @@ export function TeamManagerApp() {
                 <div className="mt-6 rounded-[24px] border border-white/10 bg-white/6 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                     <div>
-                      <label className="text-xs uppercase tracking-[0.28em] text-white/50">Målskyttar</label>
+                      <label className="text-xs uppercase tracking-[0.28em] text-white/50">Matchstatistik</label>
                       <p className="mt-2 text-sm text-white/58">
-                        Välj hur många mål varje spelare gjorde i matchen. Listan sparas och bygger er skytteliga över tid.
+                        Välj mål, gula kort och röda kort per spelare. Matchtyp-filtret i statistiken använder den här datan.
                       </p>
                     </div>
                     <div className="rounded-full border border-white/10 bg-black/18 px-4 py-2 text-xs uppercase tracking-[0.22em] text-white/65">
@@ -1697,13 +1870,14 @@ export function TeamManagerApp() {
                     {state.players.map((player) => {
                       const currentGoals =
                         selectedMatch.goalScorers?.find((entry) => entry.playerId === player.id)?.goals ?? 0;
+                      const attributes = getMatchPlayerAttributes(selectedMatch, player.id);
 
                       return (
                         <div
                           key={player.id}
                           className={clsx(
-                            "flex items-center justify-between gap-3 rounded-[20px] border px-3 py-3 transition",
-                            currentGoals > 0
+                            "flex flex-col gap-3 rounded-[20px] border px-3 py-3 transition xl:flex-row xl:items-center xl:justify-between",
+                            currentGoals > 0 || (attributes.yellowCards ?? 0) > 0 || (attributes.redCards ?? 0) > 0
                               ? "border-emerald-400/40 bg-emerald-400/10"
                               : "border-white/10 bg-black/18",
                           )}
@@ -1715,23 +1889,86 @@ export function TeamManagerApp() {
                             <p className="text-xs text-white/56">{player.firstName}</p>
                           </div>
 
-                          <div className="flex items-center gap-2">
-                            {[0, 1, 2, 3, 4, 5].map((goalCount) => (
-                              <button
-                                key={goalCount}
-                                type="button"
-                                onClick={() => handleGoalCountChange(player.id, goalCount)}
-                                className={clsx(
-                                  "inline-flex h-9 min-w-9 items-center justify-center rounded-full border px-2 text-sm font-black transition",
-                                  currentGoals === goalCount
-                                    ? "border-amber-300 bg-amber-300 text-slate-950"
-                                    : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
-                                )}
-                                aria-label={`${player.firstName} ${player.lastName} gjorde ${goalCount} mål`}
-                              >
-                                {goalCount}
-                              </button>
-                            ))}
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div>
+                              <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-emerald-100/70">
+                                Mål
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {[0, 1, 2, 3, 4, 5].map((goalCount) => (
+                                  <button
+                                    key={goalCount}
+                                    type="button"
+                                    onClick={() => handleGoalCountChange(player.id, goalCount)}
+                                    className={clsx(
+                                      "inline-flex h-8 min-w-8 items-center justify-center rounded-full border px-2 text-xs font-black transition",
+                                      currentGoals === goalCount
+                                        ? "border-emerald-300 bg-emerald-300 text-slate-950"
+                                        : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                                    )}
+                                    aria-label={`${player.firstName} ${player.lastName} gjorde ${goalCount} mål`}
+                                  >
+                                    {goalCount}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-amber-100/70">
+                                Gula
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {[0, 1, 2].map((value) => (
+                                  <button
+                                    key={`match-yellow-${player.id}-${value}`}
+                                    type="button"
+                                    onClick={() =>
+                                      updateMatchPlayerAttributes(player.id, (current) => ({
+                                        ...current,
+                                        yellowCards: value,
+                                      }))
+                                    }
+                                    className={clsx(
+                                      "inline-flex h-8 min-w-8 items-center justify-center rounded-full border px-2 text-xs font-black transition",
+                                      (attributes.yellowCards ?? 0) === value
+                                        ? "border-amber-300 bg-amber-300 text-slate-950"
+                                        : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                                    )}
+                                  >
+                                    {value}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-rose-100/70">
+                                Röda
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {[0, 1, 2].map((value) => (
+                                  <button
+                                    key={`match-red-${player.id}-${value}`}
+                                    type="button"
+                                    onClick={() =>
+                                      updateMatchPlayerAttributes(player.id, (current) => ({
+                                        ...current,
+                                        redCards: value,
+                                      }))
+                                    }
+                                    className={clsx(
+                                      "inline-flex h-8 min-w-8 items-center justify-center rounded-full border px-2 text-xs font-black transition",
+                                      (attributes.redCards ?? 0) === value
+                                        ? "border-rose-300 bg-rose-400 text-white"
+                                        : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                                    )}
+                                  >
+                                    {value}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1943,26 +2180,97 @@ export function TeamManagerApp() {
             </div>
 
             <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
-              <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Skytteliga</p>
-              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {allTimeGoalLeaders.length > 0 ? (
-                  allTimeGoalLeaders.slice(0, 12).map((entry) => (
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                <div>
+                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
+                    Topplista: {statsSortOption.label}
+                  </p>
+                  <p className="mt-2 text-sm text-white/56">
+                    Högst värde visas överst. Alla rader visar mål, gula kort och röda kort.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {STATS_SORT_OPTIONS.map((option) => {
+                    const isSelected = statsSortMetric === option.key;
+
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setStatsSortMetric(option.key)}
+                        className={clsx(
+                          "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
+                          isSelected
+                            ? "bg-emerald-300 text-slate-950"
+                            : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-3">
+                {statsLeaders.length > 0 ? (
+                  statsLeaders.slice(0, 20).map((entry, index) => (
                     <div
                       key={entry.player.id}
-                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/6 px-4 py-3"
+                      className="grid gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center"
                     >
-                      <div>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-300/30 bg-emerald-300/10 text-sm font-black text-emerald-100">
+                        {index + 1}
+                      </div>
+
+                      <div className="min-w-0">
                         <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
                           #{entry.player.number} {entry.player.lastName}
                         </p>
-                        <p className="text-xs text-white/52">{entry.matches} matcher med mål</p>
+                        <p className="text-xs text-white/52">{entry.player.firstName}</p>
                       </div>
-                      <span className="text-lg font-black text-emerald-200">{entry.goals}</span>
+
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div
+                          className={clsx(
+                            "min-w-16 rounded-2xl border px-3 py-2",
+                            statsSortMetric === "goals"
+                              ? "border-emerald-300/45 bg-emerald-300/14"
+                              : "border-white/10 bg-black/18",
+                          )}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Mål</p>
+                          <p className="text-lg font-black text-emerald-100">{entry.goals}</p>
+                        </div>
+                        <div
+                          className={clsx(
+                            "min-w-16 rounded-2xl border px-3 py-2",
+                            statsSortMetric === "yellowCards"
+                              ? "border-amber-300/45 bg-amber-300/14"
+                              : "border-white/10 bg-black/18",
+                          )}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Gula</p>
+                          <p className="text-lg font-black text-amber-100">{entry.yellowCards}</p>
+                        </div>
+                        <div
+                          className={clsx(
+                            "min-w-16 rounded-2xl border px-3 py-2",
+                            statsSortMetric === "redCards"
+                              ? "border-rose-300/45 bg-rose-300/14"
+                              : "border-white/10 bg-black/18",
+                          )}
+                        >
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Röda</p>
+                          <p className="text-lg font-black text-rose-100">{entry.redCards}</p>
+                        </div>
+                      </div>
                     </div>
                   ))
                 ) : (
                   <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
-                    Ingen statistik i det här urvalet ännu.
+                    Ingen statistik för {statsSortOption.valueLabel} i det här urvalet ännu.
                   </p>
                 )}
               </div>
