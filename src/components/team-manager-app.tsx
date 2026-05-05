@@ -60,7 +60,9 @@ import { supabaseConfigured } from "@/lib/supabase";
 import {
   AiAnalysisSettings,
   MatchRecord,
+  MatchType,
   Player,
+  PlayerSquadStatus,
   PlayerTrait,
   TeamAppState,
 } from "@/lib/types";
@@ -70,6 +72,7 @@ type PlayerFormState = {
   firstName: string;
   lastName: string;
   number: string;
+  squadStatus: PlayerSquadStatus;
   image?: string;
 };
 
@@ -78,9 +81,11 @@ type MatchFormState = {
   opponentName: string;
   location: string;
   formationKey: string;
+  matchType: MatchType;
 };
 
-type StudioTab = "players" | "matches" | "lineup" | "export" | "analysis";
+type StudioTab = "players" | "matches" | "lineup" | "stats" | "export" | "analysis";
+type StatsMatchTypeFilter = "all" | MatchType;
 
 const PLAYER_TRAIT_OPTIONS: PlayerTrait[] = [
   "Peppande",
@@ -91,10 +96,39 @@ const PLAYER_TRAIT_OPTIONS: PlayerTrait[] = [
   "Vinnarskalle",
 ];
 
+const PLAYER_SQUAD_STATUS_OPTIONS: Array<{
+  key: PlayerSquadStatus;
+  label: string;
+  helper: string;
+}> = [
+  { key: "regular", label: "Ordinarie trupp", helper: "Spelare som hör till laget." },
+  {
+    key: "borrowed",
+    label: "Lånespelare",
+    helper: "Inlånad från annat lag, men valbar i matchplaneringen.",
+  },
+];
+
+const MATCH_TYPE_OPTIONS: Array<{
+  key: MatchType;
+  label: string;
+  shortLabel: string;
+}> = [
+  { key: "league", label: "Seriespel", shortLabel: "Serie" },
+  { key: "friendly", label: "Träningsmatch", shortLabel: "Träning" },
+  { key: "cup", label: "Annan cup", shortLabel: "Cup" },
+];
+
+const STATS_MATCH_TYPE_FILTER_OPTIONS: Array<{ key: StatsMatchTypeFilter; label: string }> = [
+  { key: "all", label: "Alla matcher" },
+  ...MATCH_TYPE_OPTIONS.map((option) => ({ key: option.key, label: option.label })),
+];
+
 const emptyPlayerForm: PlayerFormState = {
   firstName: "",
   lastName: "",
   number: "",
+  squadStatus: "regular",
   image: "",
 };
 
@@ -129,6 +163,18 @@ function formatShortDate(dateString: string) {
   }).format(new Date(dateString));
 }
 
+function getMatchTypeLabel(matchType: MatchType = "league") {
+  return MATCH_TYPE_OPTIONS.find((option) => option.key === matchType)?.label ?? "Seriespel";
+}
+
+function getMatchTypeShortLabel(matchType: MatchType = "league") {
+  return MATCH_TYPE_OPTIONS.find((option) => option.key === matchType)?.shortLabel ?? "Serie";
+}
+
+function getPlayerSquadStatusLabel(status: PlayerSquadStatus = "regular") {
+  return PLAYER_SQUAD_STATUS_OPTIONS.find((option) => option.key === status)?.label ?? "Ordinarie trupp";
+}
+
 function removePlayerEverywhere(match: MatchRecord, playerId: string): MatchRecord {
   return {
     ...match,
@@ -146,7 +192,7 @@ function createMatchState(form: MatchFormState, teamId: string): MatchRecord {
     id: crypto.randomUUID(),
     teamId,
     matchDate: form.matchDate,
-    matchType: "league",
+    matchType: form.matchType,
     opponentName: form.opponentName,
     location: form.location,
     formationKey: form.formationKey,
@@ -183,18 +229,29 @@ function buildAiAnalysisPrompt(matches: MatchRecord[], players: Map<string, Play
           position: slot.positionLabel,
           player: player ? `${player.firstName} ${player.lastName}` : "Ingen spelare vald",
           number: player?.number ?? null,
+          squadStatus: player ? getPlayerSquadStatusLabel(player.squadStatus) : null,
         };
       });
 
       const bench = match.benchPlayerIds
         .map((playerId) => players.get(playerId))
         .filter((player): player is Player => Boolean(player))
-        .map((player) => `${player.firstName} ${player.lastName} (#${player.number})`);
+        .map(
+          (player) =>
+            `${player.firstName} ${player.lastName} (#${player.number}, ${getPlayerSquadStatusLabel(
+              player.squadStatus,
+            )})`,
+        );
 
       const unavailable = match.unavailablePlayerIds
         .map((playerId) => players.get(playerId))
         .filter((player): player is Player => Boolean(player))
-        .map((player) => `${player.firstName} ${player.lastName} (#${player.number})`);
+        .map(
+          (player) =>
+            `${player.firstName} ${player.lastName} (#${player.number}, ${getPlayerSquadStatusLabel(
+              player.squadStatus,
+            )})`,
+        );
 
       const scorers = (match.goalScorers ?? []).map((entry) => {
         const player = players.get(entry.playerId);
@@ -206,6 +263,7 @@ function buildAiAnalysisPrompt(matches: MatchRecord[], players: Map<string, Play
       return {
         opponent: match.opponentName,
         date: match.matchDate,
+        matchType: getMatchTypeLabel(match.matchType),
         location: match.location,
         formation: match.formationKey,
         result:
@@ -255,6 +313,11 @@ function DraggablePlayerChip({
         {player.lastName}
       </span>
       <span className="ml-2 text-white/65">{player.firstName}</span>
+      {player.squadStatus === "borrowed" ? (
+        <span className="ml-2 rounded-full border border-cyan-300/30 bg-cyan-300/12 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.14em] text-cyan-100">
+          Lån
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -480,11 +543,14 @@ export function TeamManagerApp() {
       opponentName: "",
       location: "",
       formationKey: DEFAULT_FORMATION_KEY,
+      matchType: "league",
     }),
     [],
   );
   const [newMatchForm, setNewMatchForm] = useState<MatchFormState>(matchForm);
   const [activeTab, setActiveTab] = useState<StudioTab>("players");
+  const [statsMatchTypeFilter, setStatsMatchTypeFilter] =
+    useState<StatsMatchTypeFilter>("all");
 
   const playerMap = useMemo(
     () => new Map(state.players.map((player) => [player.id, player])),
@@ -528,6 +594,30 @@ export function TeamManagerApp() {
     [selectedMatch?.benchPlayerIds, selectedMatch?.unavailablePlayerIds, starterIds, state.players],
   );
 
+  const regularPlayers = useMemo(
+    () => state.players.filter((player) => (player.squadStatus ?? "regular") === "regular"),
+    [state.players],
+  );
+  const borrowedPlayers = useMemo(
+    () => state.players.filter((player) => player.squadStatus === "borrowed"),
+    [state.players],
+  );
+  const freeRegularPlayers = useMemo(
+    () => freePlayers.filter((player) => (player.squadStatus ?? "regular") === "regular"),
+    [freePlayers],
+  );
+  const freeBorrowedPlayers = useMemo(
+    () => freePlayers.filter((player) => player.squadStatus === "borrowed"),
+    [freePlayers],
+  );
+  const statsMatches = useMemo(
+    () =>
+      statsMatchTypeFilter === "all"
+        ? state.matches
+        : state.matches.filter((match) => (match.matchType ?? "league") === statsMatchTypeFilter),
+    [state.matches, statsMatchTypeFilter],
+  );
+
   const selectedMatchStarters = selectedMatch?.lineupSlots ?? [];
   const selectedMatchGoalSummary = useMemo(
     () =>
@@ -542,7 +632,7 @@ export function TeamManagerApp() {
   const allTimeGoalLeaders = useMemo(() => {
     const totals = new Map<string, { goals: number; matches: number }>();
 
-    for (const match of state.matches) {
+    for (const match of statsMatches) {
       for (const scorer of match.goalScorers ?? []) {
         const current = totals.get(scorer.playerId) ?? { goals: 0, matches: 0 };
         totals.set(scorer.playerId, {
@@ -568,7 +658,7 @@ export function TeamManagerApp() {
         })
         .filter((entry): entry is { player: Player; goals: number; matches: number } => Boolean(entry)),
     );
-  }, [playerMap, state.matches]);
+  }, [playerMap, statsMatches]);
   const selectedAiMatches = useMemo(
     () => state.matches.filter((match) => aiSettings.selectedMatchIds.includes(match.id)),
     [aiSettings.selectedMatchIds, state.matches],
@@ -645,6 +735,7 @@ export function TeamManagerApp() {
         firstName: playerForm.firstName.trim(),
         lastName: playerForm.lastName.trim(),
         number: playerForm.number.trim(),
+        squadStatus: playerForm.squadStatus,
         image,
         smallCardCropArea: existingPlayer?.smallCardCropArea ?? { x: 50, y: 50, width: 100, height: 100 },
         smallCardShowName: existingPlayer?.smallCardShowName ?? true,
@@ -1055,6 +1146,7 @@ export function TeamManagerApp() {
  { key: "players", label: "Lagmedlemmar" },
   { key: "matches", label: "Matchlista" },
   { key: "lineup", label: "Laguppställning", disabled: !selectedMatch },
+  { key: "stats", label: "Statistik" },
   { key: "export", label: "Whatsapp-export", disabled: !selectedMatch },
   { key: "analysis", label: "AI analys" },
 ].map((tab) => {
@@ -1167,6 +1259,34 @@ export function TeamManagerApp() {
                 placeholder="Tröjnummer"
                 className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
               />
+              <div className="grid gap-3 sm:grid-cols-2">
+                {PLAYER_SQUAD_STATUS_OPTIONS.map((option) => {
+                  const isSelected = playerForm.squadStatus === option.key;
+
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() =>
+                        setPlayerForm((current) => ({ ...current, squadStatus: option.key }))
+                      }
+                      className={clsx(
+                        "rounded-2xl border px-4 py-3 text-left transition",
+                        isSelected
+                          ? "border-cyan-300/45 bg-cyan-300/12 text-cyan-50"
+                          : "border-white/10 bg-white/6 text-white/72 hover:bg-white/10",
+                      )}
+                    >
+                      <span className="block text-sm font-black uppercase tracking-[0.14em]">
+                        {option.label}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-white/52">
+                        {option.helper}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
               <label className="block rounded-2xl border border-dashed border-white/16 bg-white/5 px-4 py-3 text-sm text-white/65">
                 Ladda upp spelarbild
                 <input type="file" accept="image/*" className="mt-2 block w-full" onChange={handlePlayerImage} />
@@ -1194,7 +1314,38 @@ export function TeamManagerApp() {
               </div>
             </form>
 
-            <div className="mt-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+            <div className="mt-5 grid gap-4 xl:grid-cols-2">
+              <div className="rounded-[28px] border border-white/10 bg-black/18 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-[0.22em] text-white/75">
+                      Ordinarie trupp
+                    </h3>
+                    <p className="mt-1 text-sm text-white/52">Spelare som hör till laget.</p>
+                  </div>
+                  <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-white/62">
+                    {regularPlayers.length}
+                  </span>
+                </div>
+              </div>
+              <div className="rounded-[28px] border border-cyan-300/16 bg-cyan-300/6 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-[0.22em] text-cyan-50/90">
+                      Lånespelare
+                    </h3>
+                    <p className="mt-1 text-sm text-white/52">
+                      Inlånade spelare som fortfarande går att använda i matchplaneringen.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-cyan-100">
+                    {borrowedPlayers.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
               {state.players.length > 0 ? (
                 state.players.map((player) => (
                   <div
@@ -1211,6 +1362,7 @@ export function TeamManagerApp() {
                             firstName: player.firstName,
                             lastName: player.lastName,
                             number: player.number,
+                            squadStatus: player.squadStatus ?? "regular",
                             image: player.image,
                           });
                           setPlayerImageFile(null);
@@ -1226,6 +1378,9 @@ export function TeamManagerApp() {
                             </p>
                             <p className="text-sm text-white/62">{player.firstName}</p>
                             <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-white/60">
+                              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1">
+                                {getPlayerSquadStatusLabel(player.squadStatus)}
+                              </span>
                               <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1">
                                 Gula: {player.yellowCards ?? 0}
                               </span>
@@ -1245,7 +1400,7 @@ export function TeamManagerApp() {
                           <div className="w-[118px] shrink-0">
                             <PlayerCard
                               player={player}
-                              positionLabel="Squad"
+                              positionLabel={player.squadStatus === "borrowed" ? "Lån" : "Squad"}
                               variant="compact"
                               showName={player.smallCardShowName ?? true}
                               showPosition={player.smallCardShowPosition ?? true}
@@ -1317,6 +1472,22 @@ export function TeamManagerApp() {
                   className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
                 />
                 <select
+                  value={newMatchForm.matchType}
+                  onChange={(event) =>
+                    setNewMatchForm((current) => ({
+                      ...current,
+                      matchType: event.target.value as MatchType,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none"
+                >
+                  {MATCH_TYPE_OPTIONS.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <select
                   value={newMatchForm.formationKey}
                   onChange={(event) =>
                     setNewMatchForm((current) => ({
@@ -1364,6 +1535,9 @@ export function TeamManagerApp() {
             <p className="text-xs uppercase tracking-[0.26em] text-white/55">
               {formatShortDate(match.matchDate)}
             </p>
+            <span className="mt-2 inline-flex rounded-full border border-emerald-300/24 bg-emerald-300/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">
+              {getMatchTypeLabel(match.matchType)}
+            </span>
             <p className="mt-2 text-lg font-black uppercase tracking-[0.08em] text-white">
               {match.opponentName}
             </p>
@@ -1406,12 +1580,17 @@ export function TeamManagerApp() {
                     {selectedMatch.opponentName}
                   </h2>
                 </div>
-                <div className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs uppercase tracking-[0.28em] text-white/66">
-                  {selectedMatch.formationKey}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <span className="rounded-full border border-emerald-300/24 bg-emerald-300/10 px-4 py-2 text-xs uppercase tracking-[0.22em] text-emerald-100/80">
+                    {getMatchTypeLabel(selectedMatch.matchType)}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs uppercase tracking-[0.28em] text-white/66">
+                    {selectedMatch.formationKey}
+                  </span>
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
                   <label className="text-xs uppercase tracking-[0.28em] text-white/50">Datum & Tid</label>
                   <input
@@ -1446,6 +1625,25 @@ export function TeamManagerApp() {
                     placeholder="Plats"
                     className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none placeholder:text-white/35"
                   />
+                </div>
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
+                  <label className="text-xs uppercase tracking-[0.28em] text-white/50">Matchtyp</label>
+                  <select
+                    value={selectedMatch.matchType ?? "league"}
+                    onChange={(event) =>
+                      updateSelectedMatch((match) => ({
+                        ...match,
+                        matchType: event.target.value as MatchType,
+                      }))
+                    }
+                    className="mt-3 w-full rounded-2xl border border-white/10 bg-white/6 px-3 py-2 text-white outline-none"
+                  >
+                    {MATCH_TYPE_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
                   <label className="text-xs uppercase tracking-[0.28em] text-white/50">Resultat</label>
@@ -1659,11 +1857,25 @@ export function TeamManagerApp() {
                     <p className="mt-2 text-sm text-white/52">
                       Dra spelare till planen, bänken eller frånvarande. Sektionen är gjord för desktop.
                     </p>
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="mt-4 space-y-4">
                       {freePlayers.length > 0 ? (
-                        freePlayers.map((player) => (
-                          <DraggablePlayerChip key={player.id} player={player} origin="pool" />
-                        ))
+                        [
+                          { key: "regular", title: "Ordinarie", players: freeRegularPlayers },
+                          { key: "borrowed", title: "Lånespelare", players: freeBorrowedPlayers },
+                        ].map((section) =>
+                          section.players.length > 0 ? (
+                            <div key={section.key}>
+                              <p className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-white/42">
+                                {section.title}
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                {section.players.map((player) => (
+                                  <DraggablePlayerChip key={player.id} player={player} origin="pool" />
+                                ))}
+                              </div>
+                            </div>
+                          ) : null,
+                        )
                       ) : (
                         <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
                           Alla spelare är redan placerade.
@@ -1689,6 +1901,73 @@ export function TeamManagerApp() {
               </div>
             </section>
           </div>
+        ) : null}
+
+       {activeTab === "stats" ? (
+          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+            <div className="mb-4 flex items-center gap-3">
+              <Sparkles className="text-emerald-200" />
+              <div>
+                <h2 className="text-lg font-black uppercase tracking-[0.12em] text-white">
+                  Statistik
+                </h2>
+                <p className="text-sm text-white/60">
+                  Filtrera statistiken på seriespel, träningsmatch eller cup.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-5 flex flex-wrap items-center gap-3 rounded-[24px] border border-white/10 bg-black/18 p-3">
+              {STATS_MATCH_TYPE_FILTER_OPTIONS.map((option) => {
+                const isSelected = statsMatchTypeFilter === option.key;
+
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setStatsMatchTypeFilter(option.key)}
+                    className={clsx(
+                      "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
+                      isSelected
+                        ? "bg-emerald-300 text-slate-950"
+                        : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+              <span className="ml-auto rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white/54">
+                {statsMatches.length} matcher i urvalet
+              </span>
+            </div>
+
+            <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+              <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">Skytteliga</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {allTimeGoalLeaders.length > 0 ? (
+                  allTimeGoalLeaders.slice(0, 12).map((entry) => (
+                    <div
+                      key={entry.player.id}
+                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/6 px-4 py-3"
+                    >
+                      <div>
+                        <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                          #{entry.player.number} {entry.player.lastName}
+                        </p>
+                        <p className="text-xs text-white/52">{entry.matches} matcher med mål</p>
+                      </div>
+                      <span className="text-lg font-black text-emerald-200">{entry.goals}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                    Ingen statistik i det här urvalet ännu.
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
         ) : null}
 
        {activeTab === "analysis" ? (
@@ -1750,7 +2029,7 @@ export function TeamManagerApp() {
                 </button>
 
                 <div className="rounded-[20px] border border-white/10 bg-white/6 p-4 text-sm leading-6 text-white/65">
-                  Matchernas formation, resultat, målskyttar, startnia, bänk och frånvarande skickas med i analysunderlaget.
+                  Matchtyp, formation, resultat, målskyttar, startnia, bänk och frånvarande skickas med i analysunderlaget.
                 </div>
               </div>
 
@@ -1788,7 +2067,7 @@ export function TeamManagerApp() {
                               {match.opponentName}
                             </p>
                             <p className="mt-1 text-xs uppercase tracking-[0.18em] text-white/52">
-                              {formatShortDate(match.matchDate)} • {match.formationKey}
+                              {formatShortDate(match.matchDate)} • {getMatchTypeShortLabel(match.matchType)} • {match.formationKey}
                             </p>
                             <p className="mt-2 text-sm text-white/62">{match.location}</p>
                           </div>
