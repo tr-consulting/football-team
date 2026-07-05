@@ -1638,8 +1638,8 @@ export function TeamManagerApp() {
       }}
       onDragEnd={handleDragEnd}
     >
-      <div className="mx-auto flex w-full max-w-[1620px] flex-col gap-6 px-4 py-6 sm:px-6 xl:px-10">
-        <section className="relative overflow-hidden rounded-[36px] border border-white/10 bg-[linear-gradient(135deg,#081120_0%,#0e2234_48%,#112c22_100%)] p-6 shadow-[0_28px_90px_rgba(2,6,23,0.36)]">
+      <div className="team-manager-app mx-auto flex w-full max-w-[1620px] flex-col gap-6 px-4 py-6 sm:px-6 xl:px-10">
+        <section className="team-manager-hero relative overflow-hidden rounded-[36px] border border-white/10 bg-[linear-gradient(135deg,#081120_0%,#0e2234_48%,#112c22_100%)] p-6 shadow-[0_28px_90px_rgba(2,6,23,0.36)]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(249,115,22,0.22),_transparent_28%),radial-gradient(circle_at_right,_rgba(34,197,94,0.18),_transparent_24%)]" />
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
@@ -1656,7 +1656,7 @@ export function TeamManagerApp() {
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-4">
+            <div className="team-manager-hero-metrics grid gap-3 sm:grid-cols-4">
               <div className="rounded-[24px] border border-white/10 bg-white/8 px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.28em] text-white/55">Spelare</p>
                 <p className="mt-2 text-3xl font-black text-white">{state.players.length}</p>
@@ -1701,8 +1701,8 @@ export function TeamManagerApp() {
           </div>
         ) : null}
 
-        <section className="rounded-[32px] border border-white/10 bg-slate-950/45 p-3 shadow-[0_20px_50px_rgba(2,6,23,0.2)]">
-          <div className="flex flex-wrap gap-3">
+        <section className="team-manager-tabs-shell rounded-[32px] border border-white/10 bg-slate-950/45 p-3 shadow-[0_20px_50px_rgba(2,6,23,0.2)]">
+          <div className="team-manager-tabs flex flex-wrap gap-3">
            {[
  { key: "players", label: "Lagmedlemmar" },
   { key: "matches", label: "Matchlista" },
@@ -1735,9 +1735,9 @@ export function TeamManagerApp() {
         </section>
 
         {activeTab === "players" ? (
-          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+          <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             {supabaseConfigured && !sessionUser ? (
-              <div className="mb-5 rounded-[28px] border border-amber-300/18 bg-[linear-gradient(135deg,rgba(245,158,11,0.14),rgba(15,23,42,0.55))] p-5 shadow-[0_20px_45px_rgba(2,6,23,0.18)]">
+              <div className="team-manager-login mb-5 rounded-[28px] border border-amber-300/18 bg-[linear-gradient(135deg,rgba(245,158,11,0.14),rgba(15,23,42,0.55))] p-5 shadow-[0_20px_45px_rgba(2,6,23,0.18)]">
                 <p className="inline-flex items-center gap-2 rounded-full border border-amber-300/20 bg-amber-300/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.34em] text-amber-100">
                   <Shield size={14} />
                   Supabase inloggning
@@ -2044,7 +2044,7 @@ export function TeamManagerApp() {
         ) : null}
 
         {activeTab === "matches" ? (
-          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+          <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             <div className="mb-4 flex items-center gap-3">
               <CalendarDays className="text-emerald-200" />
               <div>
@@ -2183,7 +2183,7 @@ export function TeamManagerApp() {
 
        {activeTab === "lineup" && selectedMatch ? (
           <div className="space-y-6">
-            <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+            <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
               <div className="mb-4 flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs uppercase tracking-[0.34em] text-amber-100/72">
@@ -2477,7 +2477,7 @@ export function TeamManagerApp() {
               )}
             </section>
 
-            <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+            <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
               <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div>
                   <p className="text-xs uppercase tracking-[0.34em] text-amber-100/76">Laguppställning</p>
@@ -2587,7 +2587,7 @@ export function TeamManagerApp() {
         ) : null}
 
        {activeTab === "stats" ? (
-          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+          <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             <div className="mb-4 flex items-center gap-3">
               <Sparkles className="text-emerald-200" />
               <div>
@@ -3077,7 +3077,7 @@ export function TeamManagerApp() {
         ) : null}
 
        {activeTab === "analysis" ? (
-          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+          <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             <div className="mb-4 flex items-center gap-3">
               <Bot className="text-cyan-200" />
               <div>
@@ -3212,7 +3212,7 @@ export function TeamManagerApp() {
         ) : null}
 
        {activeTab === "export" && selectedMatch ? (
-          <section className="rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
+          <section className="team-manager-panel rounded-[32px] border border-white/10 bg-slate-950/55 p-5 shadow-[0_20px_50px_rgba(2,6,23,0.24)]">
             <div className="mb-4 flex items-center gap-3">
               <Shield className="text-cyan-200" />
               <div>
