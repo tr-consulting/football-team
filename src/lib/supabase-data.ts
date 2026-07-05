@@ -31,6 +31,7 @@ type PlayerRow = {
   team_id: string;
   first_name: string;
   last_name: string;
+  nickname?: string | null;
   number: string;
   squad_status?: PlayerSquadStatus | null;
   image_path: string | null;
@@ -102,6 +103,7 @@ function isMissingColumnError(error: unknown, columnName: string) {
 function isMissingPlayerProfileColumn(error: unknown) {
   return (
     isMissingColumnError(error, "players.squad_status") ||
+    isMissingColumnError(error, "players.nickname") ||
     isMissingColumnError(error, "players.small_card_crop_area") ||
     isMissingColumnError(error, "players.yellow_cards") ||
     isMissingColumnError(error, "players.red_cards") ||
@@ -168,6 +170,7 @@ function mapPlayer(row: PlayerRow): Player {
     teamId: row.team_id,
     firstName: row.first_name,
     lastName: row.last_name,
+    nickname: row.nickname?.trim() || undefined,
     number: row.number,
     squadStatus: row.squad_status ?? "regular",
     image: row.image_path ?? undefined,
@@ -307,19 +310,32 @@ export function subscribeToSupabaseAuth(callback: (user: User | null) => void) {
 
 export async function signInLeader(email: string) {
   const client = assertSupabase();
-  const redirectUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    (typeof window !== "undefined" ? window.location.origin : undefined);
   const { error } = await client.auth.signInWithOtp({
-    email,
-    options: {
-      emailRedirectTo: redirectUrl,
-    },
+    email: email.trim(),
   });
 
   if (error) {
     throw error;
   }
+}
+
+export async function verifyLeaderOtp(email: string, token: string) {
+  const client = assertSupabase();
+  const { data, error } = await client.auth.verifyOtp({
+    email: email.trim(),
+    token: token.trim(),
+    type: "email",
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data.user) {
+    throw new Error("Kunde inte verifiera engångskoden.");
+  }
+
+  return data.user;
 }
 
 export async function signOutLeader() {
@@ -359,7 +375,7 @@ export async function loadRemoteTeamState(user: User): Promise<TeamAppState> {
   const playersWithCropQuery = client
     .from("players")
     .select(
-      "id, team_id, first_name, last_name, number, squad_status, image_path, small_card_crop_area, yellow_cards, red_cards, traits, created_at",
+      "id, team_id, first_name, last_name, nickname, number, squad_status, image_path, small_card_crop_area, yellow_cards, red_cards, traits, created_at",
     )
     .eq("team_id", team.id);
 
@@ -517,6 +533,7 @@ export async function persistRemoteTeamState(state: TeamAppState) {
       team_id: state.team.id,
       first_name: player.firstName,
       last_name: player.lastName,
+      nickname: player.nickname?.trim() || null,
       number: player.number,
       squad_status: player.squadStatus ?? "regular",
       image_path: player.image ?? null,

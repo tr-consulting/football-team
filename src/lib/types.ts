@@ -30,6 +30,7 @@ export type Player = {
   teamId: string;
   firstName: string;
   lastName: string;
+  nickname?: string;
   number: string;
   squadStatus?: PlayerSquadStatus;
   image?: string;

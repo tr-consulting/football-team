@@ -1,4 +1,5 @@
 import { PlayerCard } from "@/components/player-card";
+import { getFormationLabel } from "@/lib/formations";
 import { LineupSlot, MatchRecord, Player, Team } from "@/lib/types";
 
 type ExportStoryProps = {
@@ -6,12 +7,28 @@ type ExportStoryProps = {
   match: MatchRecord;
   starters: LineupSlot[];
   bench: Player[];
-  unavailable: Player[];
   getPlayer: (playerId: string | null) => Player | undefined;
 };
 
+const STATIC_HOME_TEAM_NAME = "Djurgården P13-5";
+
 function getDepthScale(y: number) {
-  return 0.62 + y / 360;
+  return 1.12 + y / 560;
+}
+
+function projectPitchX(x: number, y: number) {
+  const leftEdge = 11 - (11 * y) / 100;
+  const width = 78 + (22 * y) / 100;
+
+  return leftEdge + (x / 100) * width;
+}
+
+function projectPitchY(y: number) {
+  return 1 + y * 0.99;
+}
+
+function pitchPoint(x: number, y: number) {
+  return `${projectPitchX(x, y).toFixed(2)},${projectPitchY(y).toFixed(2)}`;
 }
 
 function getMatchTypeLabel(matchType = "league") {
@@ -20,10 +37,26 @@ function getMatchTypeLabel(matchType = "league") {
   }
 
   if (matchType === "cup") {
-    return "Annan cup";
+    return "Cup";
   }
 
   return "Seriespel";
+}
+
+function getMatchDateParts(matchDate: string) {
+  const date = new Date(matchDate);
+
+  return {
+    date: new Intl.DateTimeFormat("sv-SE", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }).format(date),
+    time: new Intl.DateTimeFormat("sv-SE", {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date),
+  };
 }
 
 export function ExportStory({
@@ -31,179 +64,192 @@ export function ExportStory({
   match,
   starters,
   bench,
-  unavailable,
   getPlayer,
 }: ExportStoryProps) {
-  const formationLabel = match.formationKey.toUpperCase();
-  const goalSummary = (match.goalScorers ?? [])
-    .map((entry) => {
-      const player = getPlayer(entry.playerId);
-      if (!player) {
-        return null;
-      }
-
-      return `${player.lastName} ${entry.goals > 1 ? `(${entry.goals})` : ""}`.trim();
-    })
-    .filter((entry): entry is string => Boolean(entry));
+  void team;
+  const formationLabel = getFormationLabel(match.formationKey).toUpperCase();
+  const matchDate = getMatchDateParts(match.matchDate);
+  const matchMeta = [
+    { label: "Datum", value: matchDate.date },
+    { label: "Tid", value: matchDate.time },
+    { label: "Plats", value: match.location },
+    { label: "Formation", value: formationLabel },
+    { label: "Matchtyp", value: getMatchTypeLabel(match.matchType) },
+  ];
 
   return (
-    <div className="relative flex h-full w-full overflow-hidden rounded-[42px] bg-[linear-gradient(180deg,#07111e_0%,#0d1930_34%,#091422_100%)] text-white">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(82,163,255,0.16),transparent_24%),radial-gradient(circle_at_bottom_right,rgba(251,191,36,0.16),transparent_24%)]" />
+    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[42px] bg-[linear-gradient(180deg,#061222_0%,#071a2d_34%,#04101c_100%)] px-7 py-6 text-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.18),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(250,204,21,0.14),transparent_26%)]" />
+      <div className="absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] [background-size:42px_42px]" />
 
-      <div className="relative flex w-[28%] flex-col border-r border-white/10 bg-[linear-gradient(180deg,rgba(5,11,22,0.94),rgba(6,14,26,0.82))] px-8 py-8">
-        <p className="text-[14px] font-semibold uppercase tracking-[0.35em] text-[#f5dfa0]">
-          Matchkort
-        </p>
-        <h1 className="mt-4 text-5xl font-black uppercase leading-none tracking-[0.08em]">
-          START 9
-        </h1>
-        <p className="mt-4 text-lg text-white/60">
-          {team.name} • {team.season}
-        </p>
-
-        <div className="mt-8 rounded-[28px] border border-white/10 bg-white/8 p-5 shadow-[0_24px_54px_rgba(3,7,18,0.36)]">
-          <p className="text-[11px] uppercase tracking-[0.34em] text-[#f5dfa0]/72">
-            Matchdetaljer
-          </p>
-          <p className="mt-3 text-3xl font-black uppercase tracking-[0.08em]">
-            {match.opponentName}
-          </p>
-          <p className="mt-2 text-sm uppercase tracking-[0.18em] text-white/50">
-            {match.location}
-          </p>
-          <p className="mt-4 text-sm text-white/70">
-            {new Intl.DateTimeFormat("sv-SE", {
-              dateStyle: "medium",
-              timeStyle: "short",
-            }).format(new Date(match.matchDate))}
-          </p>
-          <p className="mt-4 inline-flex rounded-full border border-[#f3db95]/28 bg-[#f3db95]/14 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-[#f8e7ae]">
-            {formationLabel}
-          </p>
-          <p className="mt-3 inline-flex rounded-full border border-emerald-200/24 bg-emerald-200/12 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-emerald-100">
-            {getMatchTypeLabel(match.matchType)}
-          </p>
-          {match.homeScore !== undefined || match.awayScore !== undefined ? (
-            <p className="mt-4 text-2xl font-black uppercase tracking-[0.08em] text-white">
-              {match.homeScore ?? 0} - {match.awayScore ?? 0}
+      <header className="relative rounded-[34px] border border-white/10 bg-slate-950/58 px-7 py-6 shadow-[0_24px_70px_rgba(3,7,18,0.42)]">
+        <div className="grid grid-cols-[minmax(0,1fr)_86px_minmax(0,1fr)] items-center gap-5">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-[0.32em] text-[#f6d889]/72">
+              Hemmalag
             </p>
-          ) : null}
-          {goalSummary.length > 0 ? (
-            <p className="mt-3 text-sm leading-6 text-white/68">
-              Mål: {goalSummary.join(", ")}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="mt-7 grid gap-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.34em] text-[#f5dfa0]/72">
-              Avbytare
-            </p>
-            <div className="mt-3 space-y-2">
-              {bench.length > 0 ? (
-                bench.map((player) => (
-                  <div
-                    key={player.id}
-                    className="rounded-2xl border border-white/10 bg-white/8 px-4 py-3 text-sm"
-                  >
-                    <span className="font-black text-[#f8e7ae]">#{player.number}</span>
-                    <span className="ml-2 font-black uppercase">{player.lastName}</span>
-                    <span className="ml-2 text-white/62">{player.firstName}</span>
-                  </div>
-                ))
-              ) : (
-                <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-white/52">
-                  Ingen avbytare vald.
-                </p>
-              )}
-            </div>
+            <h1 className="mt-3 truncate text-4xl font-black uppercase tracking-[0.06em] text-white">
+              {STATIC_HOME_TEAM_NAME}
+            </h1>
           </div>
 
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.34em] text-[#f5dfa0]/72">
-              Frånvarande
-            </p>
-            <div className="mt-3 space-y-2">
-              {unavailable.length > 0 ? (
-                unavailable.map((player) => (
-                  <div
-                    key={player.id}
-                    className="rounded-2xl border border-white/10 bg-black/22 px-4 py-3 text-sm text-white/78"
-                  >
-                    #{player.number} {player.lastName}, {player.firstName}
-                  </div>
-                ))
-              ) : (
-                <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-white/52">
-                  Inga frånvarande markerade.
-                </p>
-              )}
-            </div>
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[#f6d889]/35 bg-black/24 text-xl font-black uppercase tracking-[0.16em] text-[#f6d889]">
+            VS
           </div>
-        </div>
-      </div>
 
-      <div className="relative flex flex-1 flex-col px-8 py-8">
-        <div className="mb-5 flex items-center justify-between gap-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.34em] text-[#f5dfa0]/72">
-              Laguppställning
+          <div className="min-w-0 text-right">
+            <p className="text-[11px] font-black uppercase tracking-[0.32em] text-[#f6d889]/72">
+              Motstånd
             </p>
-            <h2 className="mt-3 text-4xl font-black uppercase tracking-[0.08em]">
-              Whatsapp-export
+            <h2 className="mt-3 truncate text-4xl font-black uppercase tracking-[0.06em] text-white">
+              {match.opponentName}
             </h2>
           </div>
-          <div className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-[11px] uppercase tracking-[0.28em] text-white/68">
-            1080 × 1350
-          </div>
         </div>
 
-        <div className="relative flex-1 overflow-hidden rounded-[34px] border border-white/10 bg-[linear-gradient(180deg,#081828_0%,#0b1522_100%)] shadow-[0_28px_70px_rgba(3,7,18,0.34)]">
-          <div className="absolute inset-x-[6%] bottom-[8%] top-[16%] overflow-hidden [clip-path:polygon(9%_0,91%_0,100%_100%,0_100%)] rounded-[24px] bg-[linear-gradient(180deg,#5bac31_0%,#4a9e2a_18%,#408422_100%)]">
-            <div className="absolute inset-0 bg-[repeating-linear-gradient(180deg,rgba(255,255,255,0.06)_0px,rgba(255,255,255,0.06)_28px,transparent_28px,transparent_56px)]" />
-            <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent_49.6%,rgba(255,255,255,0.6)_49.6%,rgba(255,255,255,0.6)_50.4%,transparent_50.4%)]" />
-            <div className="absolute left-[11%] right-[11%] top-[9%] bottom-[9%] border-[3px] border-white/82" />
-            <div className="absolute left-1/2 top-[50%] h-[19%] w-[19%] -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white/82" />
-            <div className="absolute left-[27%] right-[27%] top-[9%] h-[12%] border-x-[3px] border-b-[3px] border-white/82 rounded-b-[22px]" />
-            <div className="absolute left-[35%] right-[35%] top-[9%] h-[4.5%] border-x-[3px] border-b-[3px] border-white/82" />
-            <div className="absolute left-[27%] right-[27%] bottom-[9%] h-[12%] border-x-[3px] border-t-[3px] border-white/82 rounded-t-[22px]" />
-            <div className="absolute left-[35%] right-[35%] bottom-[9%] h-[4.5%] border-x-[3px] border-t-[3px] border-white/82" />
-          </div>
+        <div className="mt-5 grid grid-cols-5 gap-3 border-t border-white/10 pt-5">
+          {matchMeta.map((item) => (
+            <div key={item.label} className="min-w-0 border-r border-white/10 pr-3 last:border-r-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.24em] text-white/38">
+                {item.label}
+              </p>
+              <p className="mt-1 truncate text-[15px] font-black uppercase tracking-[0.08em] text-white/88">
+                {item.value}
+              </p>
+            </div>
+          ))}
+        </div>
+      </header>
 
-          {starters.map((slot) => {
-            const player = getPlayer(slot.playerId);
-            const scale = getDepthScale(slot.y);
+      <section className="relative mt-7 text-center">
+        <div className="flex items-center justify-center gap-7">
+          <span className="h-px w-16 bg-[#f6d889]/74" />
+          <p className="text-2xl font-black uppercase tracking-[0.5em] text-white">
+            Start-nia
+          </p>
+          <span className="h-px w-16 bg-[#f6d889]/74" />
+        </div>
+        <p className="mt-2 text-5xl font-black uppercase tracking-[0.2em] text-[#f6d889]">
+          {formationLabel}
+        </p>
+      </section>
 
-            return (
+      <section className="relative mt-4 h-[825px] overflow-hidden rounded-[30px]">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(34,197,94,0.2),transparent_58%)]" />
+        <svg
+          className="absolute inset-x-0 bottom-0 top-4 h-[calc(100%-1rem)] w-full drop-shadow-[0_30px_90px_rgba(2,6,23,0.42)]"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id="export-pitch-grass" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#62b944" />
+              <stop offset="34%" stopColor="#46982f" />
+              <stop offset="100%" stopColor="#2f761d" />
+            </linearGradient>
+            <pattern id="export-pitch-stripes" width="100" height="10" patternUnits="userSpaceOnUse">
+              <rect width="100" height="5" fill="rgba(255,255,255,0.055)" />
+            </pattern>
+            <clipPath id="export-pitch-clip">
+              <polygon points="11,1 89,1 100,100 0,100" />
+            </clipPath>
+          </defs>
+
+          <g clipPath="url(#export-pitch-clip)">
+            <polygon points="11,1 89,1 100,100 0,100" fill="url(#export-pitch-grass)" />
+            <polygon points="11,1 89,1 100,100 0,100" fill="url(#export-pitch-stripes)" />
+            <path d="M50 1 L50 100" stroke="rgba(255,255,255,0.62)" strokeWidth="0.42" />
+          </g>
+
+          <g fill="none" stroke="rgba(255,255,255,0.82)" strokeWidth="0.42" vectorEffect="non-scaling-stroke">
+            <polygon points="11,1 89,1 100,100 0,100" />
+            <polyline points={`${pitchPoint(0, 1)} ${pitchPoint(100, 1)}`} />
+            <polyline points={`${pitchPoint(0, 100)} ${pitchPoint(100, 100)}`} />
+
+            <circle cx="50" cy={projectPitchY(50)} r="10" />
+
+            <polyline
+              points={`${pitchPoint(32, 1)} ${pitchPoint(32, 13)} ${pitchPoint(68, 13)} ${pitchPoint(68, 1)}`}
+            />
+            <polyline
+              points={`${pitchPoint(39, 1)} ${pitchPoint(39, 6)} ${pitchPoint(61, 6)} ${pitchPoint(61, 1)}`}
+            />
+            <polyline
+              points={`${pitchPoint(32, 100)} ${pitchPoint(32, 88)} ${pitchPoint(68, 88)} ${pitchPoint(68, 100)}`}
+            />
+            <polyline
+              points={`${pitchPoint(39, 100)} ${pitchPoint(39, 95)} ${pitchPoint(61, 95)} ${pitchPoint(61, 100)}`}
+            />
+
+            <path d={`M ${pitchPoint(0, 9)} Q ${pitchPoint(9, 9)} ${pitchPoint(9, 1)}`} />
+            <path d={`M ${pitchPoint(91, 1)} Q ${pitchPoint(91, 9)} ${pitchPoint(100, 9)}`} />
+            <path d={`M ${pitchPoint(0, 92)} Q ${pitchPoint(9, 92)} ${pitchPoint(9, 100)}`} />
+            <path d={`M ${pitchPoint(91, 100)} Q ${pitchPoint(91, 92)} ${pitchPoint(100, 92)}`} />
+          </g>
+        </svg>
+
+        {starters.map((slot) => {
+          const player = getPlayer(slot.playerId);
+          const scale = getDepthScale(slot.y);
+
+          return (
+            <div
+              key={slot.slotKey}
+              className="absolute"
+              style={{
+                left: `calc(${projectPitchX(slot.x, slot.y)}% + ${slot.manualOffsetX}px)`,
+                top: `calc(${projectPitchY(slot.y)}% + ${slot.manualOffsetY}px)`,
+                transform: `translate(-50%, -50%) scale(${scale})`,
+                transformOrigin: "center bottom",
+                zIndex: Math.round(slot.y * 10),
+              }}
+            >
+              <div className="absolute inset-x-6 bottom-3 h-5 rounded-full bg-black/38 blur-md" />
+              <PlayerCard
+                player={player}
+                positionLabel={slot.positionLabel}
+                variant="face"
+                showName={player?.smallCardShowName ?? true}
+                showPosition={player?.smallCardShowPosition ?? true}
+                showNumber={player?.smallCardShowNumber ?? true}
+                isEmpty={!player}
+              />
+            </div>
+          );
+        })}
+      </section>
+
+      <section className="relative mt-5 rounded-[30px] border border-white/12 bg-slate-950/58 px-7 py-5 shadow-[0_22px_70px_rgba(3,7,18,0.32)]">
+        <div className="mb-4 flex items-center justify-center gap-7">
+          <span className="h-px w-16 bg-[#f6d889]/74" />
+          <p className="text-xl font-black uppercase tracking-[0.46em] text-[#f6d889]">
+            Avbytare
+          </p>
+          <span className="h-px w-16 bg-[#f6d889]/74" />
+        </div>
+
+        {bench.length > 0 ? (
+          <div className="grid grid-cols-4 gap-4">
+            {bench.map((player) => (
               <div
-                key={slot.slotKey}
-                className="absolute -translate-x-1/2"
-                style={{
-                  left: `calc(${slot.x}% + ${slot.manualOffsetX}px)`,
-                  top: `calc(${slot.y}% + ${slot.manualOffsetY}px)`,
-                  transform: `translateY(-50%) scale(${scale})`,
-                  transformOrigin: "center bottom",
-                  zIndex: Math.round(slot.y * 10),
-                }}
+                key={player.id}
+                className="min-w-0 rounded-[14px] border border-cyan-400/55 bg-[linear-gradient(135deg,rgba(3,18,34,0.94),rgba(5,29,52,0.9))] px-5 py-4 shadow-[0_12px_34px_rgba(3,7,18,0.24)]"
               >
-                <div className="absolute inset-x-8 bottom-6 h-4 rounded-full bg-black/35 blur-md" />
-                <div className="scale-[1.95] origin-center">
-                  <PlayerCard
-                    player={player}
-                    positionLabel={slot.positionLabel}
-                    variant="face"
-                    showName={player?.smallCardShowName ?? true}
-                    showPosition={player?.smallCardShowPosition ?? true}
-                    showNumber={player?.smallCardShowNumber ?? true}
-                    isEmpty={!player}
-                  />
-                </div>
+                <p className="text-xl font-black text-[#f6d889]">#{player.number}</p>
+                <p className="mt-2 truncate text-lg font-black uppercase tracking-[0.06em] text-white">
+                  {player.lastName}
+                </p>
+                <p className="mt-1 truncate text-base text-white/72">{player.firstName}</p>
               </div>
-            );
-          })}
-        </div>
-      </div>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-[18px] border border-dashed border-white/14 px-5 py-5 text-center text-base text-white/56">
+            Ingen avbytare vald.
+          </p>
+        )}
+      </section>
     </div>
   );
 }

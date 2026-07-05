@@ -18,6 +18,7 @@ create table if not exists public.players (
   team_id uuid not null references public.teams (id) on delete cascade,
   first_name text not null,
   last_name text not null,
+  nickname text,
   number text not null,
   squad_status text not null default 'regular',
   image_path text,
@@ -25,7 +26,8 @@ create table if not exists public.players (
 );
 
 alter table public.players
-  add column if not exists squad_status text not null default 'regular';
+  add column if not exists squad_status text not null default 'regular',
+  add column if not exists nickname text;
 
 do $$
 begin

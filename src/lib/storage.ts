@@ -35,6 +35,7 @@ export const defaultTeamState: TeamAppState = {
 function normalizePlayer(player: Player): Player {
   return {
     ...player,
+    nickname: player.nickname?.trim() || undefined,
     squadStatus: player.squadStatus ?? "regular",
   };
 }

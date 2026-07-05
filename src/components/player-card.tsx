@@ -64,6 +64,16 @@ function getVariantClasses(variant: NonNullable<PlayerCardProps["variant"]>) {
   }
 }
 
+function getPlayerCompactName(player: Player) {
+  const nickname = player.nickname?.trim();
+
+  if (nickname) {
+    return nickname;
+  }
+
+  return `${player.firstName?.[0] ?? ""}.${player.lastName}`;
+}
+
 export function PlayerCard({
   player,
   positionLabel,
@@ -85,7 +95,7 @@ export function PlayerCard({
   const storyCard = variant === "story";
   const compactCard = variant === "compact";
   const modernCard = faceOnly || storyCard || compactCard;
-  const faceName = player ? `${player.firstName?.[0] ?? ""}.${player.lastName}` : "";
+  const faceName = player ? getPlayerCompactName(player) : "Ledig";
   const focus = imageFocus ?? (faceOnly ? "face" : "full");
   const imageObjectPosition = focus === "face" ? "center 22%" : focus === "torso" ? "center 38%" : "center 58%";
   const cropStyle = { objectPosition: imageObjectPosition };
@@ -176,7 +186,7 @@ export function PlayerCard({
         {showNumber && player?.number ? (
           <div
             className={clsx(
-              "absolute rounded-full border border-cyan-300/50 bg-slate-950/90 font-black leading-none text-white shadow-[0_6px_18px_rgba(2,6,23,0.4)] backdrop-blur-sm",
+              "absolute rounded-full border border-cyan-300/50 bg-slate-950/90 font-black leading-none text-white shadow-[0_6px_18px_rgba(2,6,23,0.4)]",
               storyCard
                 ? "left-3 top-3 px-3 py-2 text-xl"
                 : compactCard
@@ -204,8 +214,8 @@ export function PlayerCard({
         ) : compactCard ? (
           <div className="absolute inset-x-2 bottom-2 rounded-[18px] border border-white/10 bg-slate-950/88 px-3 py-2 text-white/95 backdrop-blur-md">
             {showName ? (
-              <p className="text-[11px] font-black uppercase leading-none tracking-[0.08em] text-cyan-100">
-                {player ? `${player.firstName?.[0] ?? ""}.${player.lastName}` : "LEDIG"}
+              <p className="truncate text-[11px] font-black uppercase leading-none tracking-[0.08em] text-cyan-100">
+                {player ? getPlayerCompactName(player) : "LEDIG"}
               </p>
             ) : null}
             {showPosition ? (
@@ -217,7 +227,7 @@ export function PlayerCard({
         ) : showName || (showPosition && player) ? (
           <div className="absolute inset-x-1 bottom-1 rounded-[20px] bg-slate-950/90 px-2 py-1 text-center text-white/90 backdrop-blur-sm">
             {showName ? (
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-100">
+              <p className="truncate text-[10px] font-black uppercase tracking-[0.2em] text-cyan-100">
                 {faceName.toUpperCase()}
               </p>
             ) : null}

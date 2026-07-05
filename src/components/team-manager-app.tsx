@@ -19,6 +19,7 @@ import {
   Bot,
   CalendarDays,
   Download,
+  KeyRound,
   LoaderCircle,
   LogOut,
   Mail,
@@ -39,6 +40,7 @@ import {
   DEFAULT_FORMATION_KEY,
   FORMATION_TEMPLATES,
   createLineupSlots,
+  getFormationLabel,
   remapMatchFormation,
 } from "@/lib/formations";
 import {
@@ -55,6 +57,7 @@ import {
   signOutLeader,
   subscribeToSupabaseAuth,
   uploadPlayerImage,
+  verifyLeaderOtp,
 } from "@/lib/supabase-data";
 import { supabaseConfigured } from "@/lib/supabase";
 import {
@@ -72,6 +75,7 @@ type PlayerFormState = {
   id?: string;
   firstName: string;
   lastName: string;
+  nickname: string;
   number: string;
   squadStatus: PlayerSquadStatus;
   image?: string;
@@ -87,7 +91,15 @@ type MatchFormState = {
 
 type StudioTab = "players" | "matches" | "lineup" | "stats" | "export" | "analysis";
 type StatsMatchTypeFilter = "all" | MatchType;
+type StatsTimeFilter = "all" | "last5" | "last10";
 type StatsSortMetric = "goals" | "yellowCards" | "redCards";
+type FormationSortMetric =
+  | "matches"
+  | "wins"
+  | "goalDifference"
+  | "goalsForAverage"
+  | "goalsAgainstAverage";
+type PlayerLoadSortMetric = "selectionRate" | "starts" | "bench" | "unavailable";
 
 const PLAYER_TRAIT_OPTIONS: PlayerTrait[] = [
   "Peppande",
@@ -126,19 +138,48 @@ const STATS_MATCH_TYPE_FILTER_OPTIONS: Array<{ key: StatsMatchTypeFilter; label:
   ...MATCH_TYPE_OPTIONS.map((option) => ({ key: option.key, label: option.label })),
 ];
 
+const STATS_TIME_FILTER_OPTIONS: Array<{ key: StatsTimeFilter; label: string; limit?: number }> = [
+  { key: "all", label: "Alla" },
+  { key: "last5", label: "Senaste 5", limit: 5 },
+  { key: "last10", label: "Senaste 10", limit: 10 },
+];
+
 const STATS_SORT_OPTIONS: Array<{
   key: StatsSortMetric;
   label: string;
   valueLabel: string;
 }> = [
-  { key: "goals", label: "Mål", valueLabel: "mål" },
-  { key: "yellowCards", label: "Gula kort", valueLabel: "gula" },
-  { key: "redCards", label: "Röda kort", valueLabel: "röda" },
+  { key: "goals", label: "⚽ Mål", valueLabel: "mål" },
+  { key: "yellowCards", label: "🟨 Gula kort", valueLabel: "gula" },
+  { key: "redCards", label: "🟥 Röda kort", valueLabel: "röda" },
+];
+
+const FORMATION_SORT_OPTIONS: Array<{
+  key: FormationSortMetric;
+  label: string;
+  direction: "asc" | "desc";
+}> = [
+  { key: "matches", label: "Matcher", direction: "desc" },
+  { key: "wins", label: "Vinster", direction: "desc" },
+  { key: "goalDifference", label: "MS", direction: "desc" },
+  { key: "goalsForAverage", label: "Fram/m", direction: "desc" },
+  { key: "goalsAgainstAverage", label: "Bak/m", direction: "asc" },
+];
+
+const PLAYER_LOAD_SORT_OPTIONS: Array<{
+  key: PlayerLoadSortMetric;
+  label: string;
+}> = [
+  { key: "selectionRate", label: "Procent" },
+  { key: "starts", label: "Start" },
+  { key: "bench", label: "Bänk" },
+  { key: "unavailable", label: "Borta" },
 ];
 
 const emptyPlayerForm: PlayerFormState = {
   firstName: "",
   lastName: "",
+  nickname: "",
   number: "",
   squadStatus: "regular",
   image: "",
@@ -181,6 +222,54 @@ function getMatchTypeLabel(matchType: MatchType = "league") {
 
 function getMatchTypeShortLabel(matchType: MatchType = "league") {
   return MATCH_TYPE_OPTIONS.find((option) => option.key === matchType)?.shortLabel ?? "Serie";
+}
+
+function getMatchTime(match: MatchRecord) {
+  return new Date(match.matchDate || match.createdAt).getTime();
+}
+
+function sortMatchesByDateDesc(matches: MatchRecord[]) {
+  return [...matches].sort((a, b) => getMatchTime(b) - getMatchTime(a));
+}
+
+function hasCompleteScore(match: MatchRecord) {
+  return typeof match.homeScore === "number" && typeof match.awayScore === "number";
+}
+
+function getMatchOutcome(match: MatchRecord) {
+  if (!hasCompleteScore(match)) {
+    return null;
+  }
+
+  if ((match.homeScore ?? 0) > (match.awayScore ?? 0)) {
+    return "W";
+  }
+
+  if ((match.homeScore ?? 0) < (match.awayScore ?? 0)) {
+    return "L";
+  }
+
+  return "D";
+}
+
+function getSelectedPlayerIds(match: MatchRecord) {
+  return new Set([
+    ...match.lineupSlots
+      .map((slot) => slot.playerId)
+      .filter((playerId): playerId is string => Boolean(playerId)),
+    ...match.benchPlayerIds,
+  ]);
+}
+
+function formatSignedNumber(value: number) {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function formatAverage(value: number) {
+  return value.toLocaleString("sv-SE", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
 }
 
 function getPlayerSquadStatusLabel(status: PlayerSquadStatus = "regular") {
@@ -410,6 +499,8 @@ export function TeamManagerApp() {
   const [isRemoteLoading, setIsRemoteLoading] = useState(false);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
+  const [authOtp, setAuthOtp] = useState("");
+  const [isAuthOtpRequested, setIsAuthOtpRequested] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -460,6 +551,8 @@ export function TeamManagerApp() {
     const unsubscribe = subscribeToSupabaseAuth((user) => {
       setSessionUser(user);
       setAuthMessage("");
+      setAuthOtp("");
+      setIsAuthOtpRequested(false);
       setIsAuthChecking(false);
       hasRemoteBootstrapRef.current = false;
       if (!user) {
@@ -575,7 +668,11 @@ export function TeamManagerApp() {
   const [activeTab, setActiveTab] = useState<StudioTab>("players");
   const [statsMatchTypeFilter, setStatsMatchTypeFilter] =
     useState<StatsMatchTypeFilter>("all");
+  const [statsTimeFilter, setStatsTimeFilter] = useState<StatsTimeFilter>("all");
   const [statsSortMetric, setStatsSortMetric] = useState<StatsSortMetric>("goals");
+  const [formationSortMetric, setFormationSortMetric] = useState<FormationSortMetric>("matches");
+  const [playerLoadSortMetric, setPlayerLoadSortMetric] =
+    useState<PlayerLoadSortMetric>("selectionRate");
 
   const playerMap = useMemo(
     () => new Map(state.players.map((player) => [player.id, player])),
@@ -607,6 +704,18 @@ export function TeamManagerApp() {
         .filter((player): player is Player => Boolean(player)),
     [playerMap, selectedMatch?.unavailablePlayerIds],
   );
+  const selectedMatchPlayers = useMemo(() => {
+    if (!selectedMatch) {
+      return [];
+    }
+
+    const selectedPlayerIds = getSelectedPlayerIds(selectedMatch);
+
+    return [...selectedPlayerIds]
+      .map((playerId) => playerMap.get(playerId))
+      .filter((player): player is Player => Boolean(player))
+      .sort((a, b) => Number(a.number) - Number(b.number) || a.lastName.localeCompare(b.lastName, "sv"));
+  }, [playerMap, selectedMatch]);
 
   const freePlayers = useMemo(
     () =>
@@ -635,12 +744,252 @@ export function TeamManagerApp() {
     () => freePlayers.filter((player) => player.squadStatus === "borrowed"),
     [freePlayers],
   );
-  const statsMatches = useMemo(
+  const statsTypeMatches = useMemo(
     () =>
-      statsMatchTypeFilter === "all"
+      sortMatchesByDateDesc(
+        statsMatchTypeFilter === "all"
         ? state.matches
         : state.matches.filter((match) => (match.matchType ?? "league") === statsMatchTypeFilter),
+      ),
     [state.matches, statsMatchTypeFilter],
+  );
+  const statsMatches = useMemo(() => {
+    const selectedTimeFilter =
+      STATS_TIME_FILTER_OPTIONS.find((option) => option.key === statsTimeFilter) ??
+      STATS_TIME_FILTER_OPTIONS[0];
+
+    return selectedTimeFilter.limit
+      ? statsTypeMatches.slice(0, selectedTimeFilter.limit)
+      : statsTypeMatches;
+  }, [statsTimeFilter, statsTypeMatches]);
+
+  const completedStatsMatches = useMemo(
+    () => statsMatches.filter(hasCompleteScore),
+    [statsMatches],
+  );
+
+  const statsOverview = useMemo(() => {
+    const wins = completedStatsMatches.filter((match) => getMatchOutcome(match) === "W").length;
+    const draws = completedStatsMatches.filter((match) => getMatchOutcome(match) === "D").length;
+    const losses = completedStatsMatches.filter((match) => getMatchOutcome(match) === "L").length;
+    const goalsFor = completedStatsMatches.reduce((sum, match) => sum + (match.homeScore ?? 0), 0);
+    const goalsAgainst = completedStatsMatches.reduce(
+      (sum, match) => sum + (match.awayScore ?? 0),
+      0,
+    );
+    const latestForm = completedStatsMatches
+      .slice(0, 5)
+      .map((match) => getMatchOutcome(match))
+      .filter((result): result is "W" | "D" | "L" => Boolean(result));
+
+    return {
+      completedMatches: completedStatsMatches.length,
+      draws,
+      goalsAgainst,
+      goalsFor,
+      goalDifference: goalsFor - goalsAgainst,
+      latestForm,
+      losses,
+      wins,
+      averageGoalsFor:
+        completedStatsMatches.length > 0 ? goalsFor / completedStatsMatches.length : 0,
+    };
+  }, [completedStatsMatches]);
+
+  const recentResultMatches = useMemo(
+    () => completedStatsMatches.slice(0, 8),
+    [completedStatsMatches],
+  );
+
+  const formationStats = useMemo(() => {
+    const totals = new Map<
+      string,
+      {
+        draws: number;
+        goalsAgainst: number;
+        goalsFor: number;
+        key: string;
+        label: string;
+        losses: number;
+        matches: number;
+        wins: number;
+      }
+    >();
+
+    for (const match of completedStatsMatches) {
+      const label = getFormationLabel(match.formationKey);
+      const current = totals.get(match.formationKey) ?? {
+        draws: 0,
+        goalsAgainst: 0,
+        goalsFor: 0,
+        key: match.formationKey,
+        label,
+        losses: 0,
+        matches: 0,
+        wins: 0,
+      };
+      const outcome = getMatchOutcome(match);
+
+      totals.set(match.formationKey, {
+        ...current,
+        draws: current.draws + (outcome === "D" ? 1 : 0),
+        goalsAgainst: current.goalsAgainst + (match.awayScore ?? 0),
+        goalsFor: current.goalsFor + (match.homeScore ?? 0),
+        losses: current.losses + (outcome === "L" ? 1 : 0),
+        matches: current.matches + 1,
+        wins: current.wins + (outcome === "W" ? 1 : 0),
+      });
+    }
+
+    const selectedSort =
+      FORMATION_SORT_OPTIONS.find((option) => option.key === formationSortMetric) ??
+      FORMATION_SORT_OPTIONS[0];
+
+    function getFormationSortValue(formation: {
+      goalsAgainst: number;
+      goalsFor: number;
+      matches: number;
+      wins: number;
+    }) {
+      switch (formationSortMetric) {
+        case "wins":
+          return formation.wins;
+        case "goalDifference":
+          return formation.goalsFor - formation.goalsAgainst;
+        case "goalsForAverage":
+          return formation.matches > 0 ? formation.goalsFor / formation.matches : 0;
+        case "goalsAgainstAverage":
+          return formation.matches > 0 ? formation.goalsAgainst / formation.matches : 0;
+        case "matches":
+        default:
+          return formation.matches;
+      }
+    }
+
+    return [...totals.values()].sort((a, b) => {
+      const valueA = getFormationSortValue(a);
+      const valueB = getFormationSortValue(b);
+
+      if (valueB !== valueA) {
+        return selectedSort.direction === "asc" ? valueA - valueB : valueB - valueA;
+      }
+
+      if (b.matches !== a.matches) {
+        return b.matches - a.matches;
+      }
+
+      if (b.wins !== a.wins) {
+        return b.wins - a.wins;
+      }
+
+      const goalDifferenceA = a.goalsFor - a.goalsAgainst;
+      const goalDifferenceB = b.goalsFor - b.goalsAgainst;
+      if (goalDifferenceB !== goalDifferenceA) {
+        return goalDifferenceB - goalDifferenceA;
+      }
+
+      return a.label.localeCompare(b.label, "sv");
+    });
+  }, [completedStatsMatches, formationSortMetric]);
+
+  const playerLoadStats = useMemo(() => {
+    const totals = new Map<
+      string,
+      {
+        bench: number;
+        starts: number;
+        unavailable: number;
+        selected: number;
+      }
+    >();
+
+    for (const player of state.players) {
+      totals.set(player.id, {
+        bench: 0,
+        selected: 0,
+        starts: 0,
+        unavailable: 0,
+      });
+    }
+
+    for (const match of statsMatches) {
+      const starterIds = new Set(
+        match.lineupSlots
+          .map((slot) => slot.playerId)
+          .filter((playerId): playerId is string => Boolean(playerId)),
+      );
+      const selectedIds = getSelectedPlayerIds(match);
+
+      for (const player of state.players) {
+        const current = totals.get(player.id);
+        if (!current) {
+          continue;
+        }
+
+        current.starts += starterIds.has(player.id) ? 1 : 0;
+        current.bench += match.benchPlayerIds.includes(player.id) ? 1 : 0;
+        current.unavailable += match.unavailablePlayerIds.includes(player.id) ? 1 : 0;
+        current.selected += selectedIds.has(player.id) ? 1 : 0;
+      }
+    }
+
+    function getPlayerLoadSortValue(entry: {
+      bench: number;
+      selectionRate: number;
+      starts: number;
+      unavailable: number;
+    }) {
+      switch (playerLoadSortMetric) {
+        case "starts":
+          return entry.starts;
+        case "bench":
+          return entry.bench;
+        case "unavailable":
+          return entry.unavailable;
+        case "selectionRate":
+        default:
+          return entry.selectionRate;
+      }
+    }
+
+    return state.players
+      .map((player) => ({
+        player,
+        ...(totals.get(player.id) ?? { bench: 0, selected: 0, starts: 0, unavailable: 0 }),
+        selectionRate: statsMatches.length > 0
+          ? ((totals.get(player.id)?.selected ?? 0) / statsMatches.length) * 100
+          : 0,
+      }))
+      .sort((a, b) => {
+        const valueA = getPlayerLoadSortValue(a);
+        const valueB = getPlayerLoadSortValue(b);
+
+        if (valueB !== valueA) {
+          return valueB - valueA;
+        }
+
+        if (b.starts !== a.starts) {
+          return b.starts - a.starts;
+        }
+
+        if (b.selected !== a.selected) {
+          return b.selected - a.selected;
+        }
+
+        if (b.bench !== a.bench) {
+          return b.bench - a.bench;
+        }
+
+        if (b.unavailable !== a.unavailable) {
+          return b.unavailable - a.unavailable;
+        }
+
+        return a.player.lastName.localeCompare(b.player.lastName, "sv");
+      });
+  }, [state.players, statsMatches, playerLoadSortMetric]);
+  const playerLoadMap = useMemo(
+    () => new Map(playerLoadStats.map((entry) => [entry.player.id, entry])),
+    [playerLoadStats],
   );
 
   const selectedMatchStarters = selectedMatch?.lineupSlots ?? [];
@@ -772,6 +1121,7 @@ export function TeamManagerApp() {
 
         return {
           player,
+          selectedMatches: playerLoadMap.get(playerId)?.selected ?? 0,
           ...totalsForPlayer,
         };
       })
@@ -785,6 +1135,7 @@ export function TeamManagerApp() {
           redCards: number;
           goalMatches: number;
           cardMatches: number;
+          selectedMatches: number;
         } => Boolean(entry),
       )
       .filter((entry) => entry[statsSortMetric] > 0)
@@ -807,8 +1158,14 @@ export function TeamManagerApp() {
 
         return a.player.lastName.localeCompare(b.player.lastName, "sv");
       });
-  }, [playerMap, state.players, statsMatches, statsMatchTypeFilter, statsSortMetric]);
+  }, [playerLoadMap, playerMap, state.players, statsMatches, statsMatchTypeFilter, statsSortMetric]);
 
+  const formationSortOption =
+    FORMATION_SORT_OPTIONS.find((option) => option.key === formationSortMetric) ??
+    FORMATION_SORT_OPTIONS[0];
+  const playerLoadSortOption =
+    PLAYER_LOAD_SORT_OPTIONS.find((option) => option.key === playerLoadSortMetric) ??
+    PLAYER_LOAD_SORT_OPTIONS[0];
   const statsSortOption =
     STATS_SORT_OPTIONS.find((option) => option.key === statsSortMetric) ?? STATS_SORT_OPTIONS[0];
   const selectedAiMatches = useMemo(
@@ -907,6 +1264,7 @@ export function TeamManagerApp() {
         teamId: current.team.id,
         firstName: playerForm.firstName.trim(),
         lastName: playerForm.lastName.trim(),
+        nickname: playerForm.nickname.trim() || undefined,
         number: playerForm.number.trim(),
         squadStatus: playerForm.squadStatus,
         image,
@@ -1191,9 +1549,34 @@ export function TeamManagerApp() {
     }
   }
 
-  async function handleSendMagicLink(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSendLoginCode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!authEmail) {
+    const email = authEmail.trim();
+    if (!email) {
+      return;
+    }
+
+    setIsAuthBusy(true);
+    setSyncError(null);
+    setAuthOtp("");
+    setAuthEmail(email);
+
+    try {
+      await signInLeader(email);
+      setIsAuthOtpRequested(true);
+      setAuthMessage("Engångskod skickad. Ange koden från mailet här i appen.");
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "Kunde inte skicka engångskod.");
+    } finally {
+      setIsAuthBusy(false);
+    }
+  }
+
+  async function handleVerifyLoginCode(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = authEmail.trim();
+    const token = authOtp.replace(/\s+/g, "");
+    if (!email || !token) {
       return;
     }
 
@@ -1201,10 +1584,13 @@ export function TeamManagerApp() {
     setSyncError(null);
 
     try {
-      await signInLeader(authEmail);
-      setAuthMessage("Magisk länk skickad. Öppna mailet och logga in.");
+      const user = await verifyLeaderOtp(email, token);
+      setSessionUser(user);
+      setAuthOtp("");
+      setIsAuthOtpRequested(false);
+      setAuthMessage("Inloggad. Supabase-synken startar nu.");
     } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Kunde inte skicka inloggningslänk.");
+      setSyncError(error instanceof Error ? error.message : "Kunde inte verifiera engångskoden.");
     } finally {
       setIsAuthBusy(false);
     }
@@ -1215,6 +1601,8 @@ export function TeamManagerApp() {
 
     try {
       await signOutLeader();
+      setAuthOtp("");
+      setIsAuthOtpRequested(false);
       setAuthMessage("Du är utloggad.");
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "Kunde inte logga ut.");
@@ -1264,7 +1652,7 @@ export function TeamManagerApp() {
               </h1>
               <p className="mt-4 max-w-2xl text-base leading-7 text-slate-200/76 sm:text-lg">
                 Desktopvy för ledaren med tydliga sektioner för matchdetaljer, laguppställning
-                och lagmedlemmar. Exporten byggs som ett färdigt Whatsapp-kort.
+                och lagmedlemmar. Exporten byggs som ett färdigt matchkort.
               </p>
             </div>
 
@@ -1320,7 +1708,7 @@ export function TeamManagerApp() {
   { key: "matches", label: "Matchlista" },
   { key: "lineup", label: "Laguppställning", disabled: !selectedMatch },
   { key: "stats", label: "Statistik" },
-  { key: "export", label: "Whatsapp-export", disabled: !selectedMatch },
+  { key: "export", label: "Matchkort", disabled: !selectedMatch },
   { key: "analysis", label: "AI analys" },
 ].map((tab) => {
               const isActive = activeTab === tab.key;
@@ -1362,7 +1750,7 @@ export function TeamManagerApp() {
                   synka spelare, matcher och uppställningar till Supabase.
                 </p>
 
-                <form className="mt-4 space-y-3" onSubmit={handleSendMagicLink}>
+                <form className="mt-4 space-y-3" onSubmit={handleSendLoginCode}>
                   <label className="block">
                     <span className="mb-2 block text-sm text-white/68">E-postadress</span>
                     <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
@@ -1372,6 +1760,9 @@ export function TeamManagerApp() {
                         value={authEmail}
                         onChange={(event) => setAuthEmail(event.target.value)}
                         placeholder="du@klubb.se"
+                        autoComplete="email"
+                        autoCapitalize="none"
+                        required
                         className="w-full bg-transparent text-white outline-none placeholder:text-white/30"
                       />
                     </div>
@@ -1383,9 +1774,44 @@ export function TeamManagerApp() {
                     className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-amber-300 px-5 py-3 font-black uppercase tracking-[0.16em] text-slate-950 disabled:opacity-60"
                   >
                     <Mail size={16} />
-                    {isAuthBusy ? "Skickar..." : "Skicka magisk länk"}
+                    {isAuthBusy
+                      ? "Skickar..."
+                      : isAuthOtpRequested
+                        ? "Skicka ny kod"
+                        : "Skicka engångskod"}
                   </button>
                 </form>
+
+                {isAuthOtpRequested ? (
+                  <form className="mt-3 space-y-3" onSubmit={handleVerifyLoginCode}>
+                    <label className="block">
+                      <span className="mb-2 block text-sm text-white/68">Engångskod</span>
+                      <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
+                        <KeyRound size={18} className="text-amber-100/75" />
+                        <input
+                          type="text"
+                          value={authOtp}
+                          onChange={(event) => setAuthOtp(event.target.value)}
+                          placeholder="123456"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          pattern="[0-9]*"
+                          required
+                          className="w-full bg-transparent text-white outline-none placeholder:text-white/30"
+                        />
+                      </div>
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={isAuthBusy || !authOtp.trim()}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-emerald-300 px-5 py-3 font-black uppercase tracking-[0.16em] text-slate-950 disabled:opacity-60"
+                    >
+                      <KeyRound size={16} />
+                      {isAuthBusy ? "Verifierar..." : "Verifiera kod"}
+                    </button>
+                  </form>
+                ) : null}
 
                 {authMessage ? (
                   <p className="mt-4 rounded-2xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
@@ -1423,15 +1849,23 @@ export function TeamManagerApp() {
                   placeholder="Efternamn"
                   className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
                 />
+                <input
+                  value={playerForm.nickname}
+                  onChange={(event) =>
+                    setPlayerForm((current) => ({ ...current, nickname: event.target.value }))
+                  }
+                  placeholder="Smeknamn"
+                  className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                />
+                <input
+                  value={playerForm.number}
+                  onChange={(event) =>
+                    setPlayerForm((current) => ({ ...current, number: event.target.value }))
+                  }
+                  placeholder="Tröjnummer"
+                  className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
+                />
               </div>
-              <input
-                value={playerForm.number}
-                onChange={(event) =>
-                  setPlayerForm((current) => ({ ...current, number: event.target.value }))
-                }
-                placeholder="Tröjnummer"
-                className="w-full rounded-2xl border border-white/10 bg-white/6 px-4 py-3 text-white outline-none placeholder:text-white/35"
-              />
               <div className="grid gap-3 sm:grid-cols-2">
                 {PLAYER_SQUAD_STATUS_OPTIONS.map((option) => {
                   const isSelected = playerForm.squadStatus === option.key;
@@ -1534,6 +1968,7 @@ export function TeamManagerApp() {
                             id: player.id,
                             firstName: player.firstName,
                             lastName: player.lastName,
+                            nickname: player.nickname ?? "",
                             number: player.number,
                             squadStatus: player.squadStatus ?? "regular",
                             image: player.image,
@@ -1550,6 +1985,11 @@ export function TeamManagerApp() {
                               {player.lastName}
                             </p>
                             <p className="text-sm text-white/62">{player.firstName}</p>
+                            {player.nickname ? (
+                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-cyan-100/70">
+                                Smeknamn: {player.nickname}
+                              </p>
+                            ) : null}
                             <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-white/60">
                               <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1">
                                 {getPlayerSquadStatusLabel(player.squadStatus)}
@@ -1758,7 +2198,7 @@ export function TeamManagerApp() {
                     {getMatchTypeLabel(selectedMatch.matchType)}
                   </span>
                   <span className="rounded-full border border-white/10 bg-white/6 px-4 py-2 text-xs uppercase tracking-[0.28em] text-white/66">
-                    {selectedMatch.formationKey}
+                    {getFormationLabel(selectedMatch.formationKey)}
                   </span>
                 </div>
               </div>
@@ -1856,9 +2296,9 @@ export function TeamManagerApp() {
                 <div className="mt-6 rounded-[24px] border border-white/10 bg-white/6 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                     <div>
-                      <label className="text-xs uppercase tracking-[0.28em] text-white/50">Matchstatistik</label>
+                      <label className="text-xs uppercase tracking-[0.28em] text-white/50">⚽ Matchstatistik</label>
                       <p className="mt-2 text-sm text-white/58">
-                        Välj mål, gula kort och röda kort per spelare. Matchtyp-filtret i statistiken använder den här datan.
+                        Välj mål, gula kort och röda kort för startspelare och bänk.
                       </p>
                     </div>
                     <div className="rounded-full border border-white/10 bg-black/18 px-4 py-2 text-xs uppercase tracking-[0.22em] text-white/65">
@@ -1867,7 +2307,8 @@ export function TeamManagerApp() {
                   </div>
 
                   <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                    {state.players.map((player) => {
+                    {selectedMatchPlayers.length > 0 ? (
+                    selectedMatchPlayers.map((player) => {
                       const currentGoals =
                         selectedMatch.goalScorers?.find((entry) => entry.playerId === player.id)?.goals ?? 0;
                       const attributes = getMatchPlayerAttributes(selectedMatch, player.id);
@@ -1892,7 +2333,7 @@ export function TeamManagerApp() {
                           <div className="grid gap-3 sm:grid-cols-3">
                             <div>
                               <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-emerald-100/70">
-                                Mål
+                                ⚽ Mål
                               </p>
                               <div className="flex flex-wrap gap-1.5">
                                 {[0, 1, 2, 3, 4, 5].map((goalCount) => (
@@ -1916,7 +2357,7 @@ export function TeamManagerApp() {
 
                             <div>
                               <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-amber-100/70">
-                                Gula
+                                🟨 Gula
                               </p>
                               <div className="flex flex-wrap gap-1.5">
                                 {[0, 1, 2].map((value) => (
@@ -1944,7 +2385,7 @@ export function TeamManagerApp() {
 
                             <div>
                               <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-rose-100/70">
-                                Röda
+                                🟥 Röda
                               </p>
                               <div className="flex flex-wrap gap-1.5">
                                 {[0, 1, 2].map((value) => (
@@ -1972,12 +2413,17 @@ export function TeamManagerApp() {
                           </div>
                         </div>
                       );
-                    })}
+                    })
+                    ) : (
+                      <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45 lg:col-span-2">
+                        Lägg spelare i startnian eller på bänken för att registrera mål och kort.
+                      </p>
+                    )}
                   </div>
 
                   <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                     <div className="rounded-[20px] border border-white/10 bg-black/18 p-4">
-                      <p className="text-xs uppercase tracking-[0.22em] text-white/48">Målskyttar i vald match</p>
+                      <p className="text-xs uppercase tracking-[0.22em] text-white/48">⚽ Målskyttar i vald match</p>
                       <div className="mt-3 space-y-2">
                         {selectedMatchGoalSummary.length > 0 ? (
                           selectedMatchGoalSummary.map((entry) => (
@@ -2146,79 +2592,412 @@ export function TeamManagerApp() {
               <Sparkles className="text-emerald-200" />
               <div>
                 <h2 className="text-lg font-black uppercase tracking-[0.12em] text-white">
-                  Statistik
+                  📊 Statistik
                 </h2>
                 <p className="text-sm text-white/60">
-                  Filtrera statistiken på seriespel, träningsmatch eller cup.
+                  Ledarpanel för form, resultat, formationer och belastning.
                 </p>
               </div>
             </div>
 
-            <div className="mb-5 flex flex-wrap items-center gap-3 rounded-[24px] border border-white/10 bg-black/18 p-3">
-              {STATS_MATCH_TYPE_FILTER_OPTIONS.map((option) => {
-                const isSelected = statsMatchTypeFilter === option.key;
+            <div className="mb-5 grid gap-3 rounded-[24px] border border-white/10 bg-black/18 p-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+              <div className="flex flex-wrap items-center gap-3">
+                {STATS_MATCH_TYPE_FILTER_OPTIONS.map((option) => {
+                  const isSelected = statsMatchTypeFilter === option.key;
 
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    onClick={() => setStatsMatchTypeFilter(option.key)}
-                    className={clsx(
-                      "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
-                      isSelected
-                        ? "bg-emerald-300 text-slate-950"
-                        : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-              <span className="ml-auto rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white/54">
-                {statsMatches.length} matcher i urvalet
-              </span>
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setStatsMatchTypeFilter(option.key)}
+                      className={clsx(
+                        "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
+                        isSelected
+                          ? "bg-emerald-300 text-slate-950"
+                          : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                {STATS_TIME_FILTER_OPTIONS.map((option) => {
+                  const isSelected = statsTimeFilter === option.key;
+
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setStatsTimeFilter(option.key)}
+                      className={clsx(
+                        "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
+                        isSelected
+                          ? "bg-amber-300 text-slate-950"
+                          : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-                <div>
-                  <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
-                    Topplista: {statsSortOption.label}
-                  </p>
-                  <p className="mt-2 text-sm text-white/56">
-                    Högst värde visas överst. Alla rader visar mål, gula kort och röda kort.
-                  </p>
+            <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+              {[
+                { label: "📅 Matcher", value: statsMatches.length, helper: `${statsOverview.completedMatches} med resultat` },
+                {
+                  label: "🏆 Rad",
+                  value: `${statsOverview.wins}-${statsOverview.draws}-${statsOverview.losses}`,
+                  helper: "V-O-F",
+                },
+                { label: "⚽ Mål framåt", value: statsOverview.goalsFor, helper: `${formatAverage(statsOverview.averageGoalsFor)} / match` },
+                { label: "🥅 Mål bakåt", value: statsOverview.goalsAgainst, helper: "Insläppta" },
+                { label: "➕ Målskillnad", value: formatSignedNumber(statsOverview.goalDifference), helper: "Gjorda - insläppta" },
+                {
+                  label: "📈 Form",
+                  value: statsOverview.latestForm.length > 0 ? statsOverview.latestForm.join(" ") : "–",
+                  helper: "Senaste 5",
+                },
+              ].map((item) => (
+                <div key={item.label} className="rounded-[24px] border border-white/10 bg-black/18 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/45">{item.label}</p>
+                  <p className="mt-2 text-2xl font-black text-white">{item.value}</p>
+                  <p className="mt-1 text-xs text-white/50">{item.helper}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+              <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
+                      📈 Form & resultat
+                    </p>
+                    <p className="mt-2 text-sm text-white/56">
+                      Senaste matcher med komplett resultat.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white/54">
+                    {recentResultMatches.length} visas
+                  </span>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {STATS_SORT_OPTIONS.map((option) => {
-                    const isSelected = statsSortMetric === option.key;
-
-                    return (
-                      <button
-                        key={option.key}
-                        type="button"
-                        onClick={() => setStatsSortMetric(option.key)}
-                        className={clsx(
-                          "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
-                          isSelected
-                            ? "bg-emerald-300 text-slate-950"
-                            : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    );
-                  })}
+                <div className="mt-5 space-y-3">
+                  {recentResultMatches.length > 0 ? (
+                    recentResultMatches.map((match) => {
+                      const outcome = getMatchOutcome(match);
+                      return (
+                        <div
+                          key={match.id}
+                          className="grid gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                              {match.opponentName}
+                            </p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.16em] text-white/48">
+                              {formatShortDate(match.matchDate)} • {getMatchTypeShortLabel(match.matchType)} • {getFormationLabel(match.formationKey)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={clsx(
+                                "inline-flex h-8 w-8 items-center justify-center rounded-full text-xs font-black",
+                                outcome === "W" && "bg-emerald-300 text-slate-950",
+                                outcome === "D" && "bg-amber-300 text-slate-950",
+                                outcome === "L" && "bg-rose-400 text-white",
+                              )}
+                            >
+                              {outcome}
+                            </span>
+                            <span className="text-lg font-black text-white">
+                              {match.homeScore}-{match.awayScore}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                      Fyll i resultat på matcher för att se formkurvan här.
+                    </p>
+                  )}
                 </div>
               </div>
 
-              <div className="mt-5 space-y-3">
-                {statsLeaders.length > 0 ? (
-                  statsLeaders.slice(0, 20).map((entry, index) => (
+              <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
+                      🧩 Formationer: {formationSortOption.label}
+                    </p>
+                    <p className="mt-2 text-sm text-white/56">
+                      Resultat och målskillnad per formation.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {FORMATION_SORT_OPTIONS.map((option) => {
+                      const isSelected = formationSortMetric === option.key;
+
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() => setFormationSortMetric(option.key)}
+                          className={clsx(
+                            "rounded-full px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] transition",
+                            isSelected
+                              ? "bg-emerald-300 text-slate-950"
+                              : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {formationStats.length > 0 ? (
+                    formationStats.map((formation) => (
+                      <div
+                        key={formation.key}
+                        className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-black uppercase tracking-[0.1em] text-white">
+                            {formation.label}
+                          </p>
+                          <span
+                            className={clsx(
+                              "rounded-full border px-3 py-1 text-xs",
+                              formationSortMetric === "matches"
+                                ? "border-emerald-300/45 bg-emerald-300/14 text-emerald-100"
+                                : "border-white/10 bg-black/18 text-white/60",
+                            )}
+                          >
+                            {formation.matches} matcher
+                          </span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+                          <div
+                            className={clsx(
+                              "rounded-2xl border px-2 py-2",
+                              formationSortMetric === "wins"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-transparent",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">V-O-F</p>
+                            <p className="text-sm font-black text-white">
+                              {formation.wins}-{formation.draws}-{formation.losses}
+                            </p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "rounded-2xl border px-2 py-2",
+                              formationSortMetric === "goalDifference"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-transparent",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">MS</p>
+                            <p className="text-sm font-black text-emerald-100">
+                              {formatSignedNumber(formation.goalsFor - formation.goalsAgainst)}
+                            </p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "rounded-2xl border px-2 py-2",
+                              formationSortMetric === "goalsForAverage"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-transparent",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Fram</p>
+                            <p className="text-sm font-black text-white">
+                              {formatAverage(formation.goalsFor / formation.matches)}
+                            </p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "rounded-2xl border px-2 py-2",
+                              formationSortMetric === "goalsAgainstAverage"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-transparent",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Bak</p>
+                            <p className="text-sm font-black text-white">
+                              {formatAverage(formation.goalsAgainst / formation.matches)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                      Formationer visas när matcherna har komplett resultat.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
+                      🧍 Spelarbelastning: {playerLoadSortOption.label}
+                    </p>
+                    <p className="mt-2 text-sm text-white/56">
+                      Uttagen betyder startnia plus bänk i matcherna i urvalet.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {PLAYER_LOAD_SORT_OPTIONS.map((option) => {
+                      const isSelected = playerLoadSortMetric === option.key;
+
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() => setPlayerLoadSortMetric(option.key)}
+                          className={clsx(
+                            "rounded-full px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] transition",
+                            isSelected
+                              ? "bg-emerald-300 text-slate-950"
+                              : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {playerLoadStats.length > 0 && statsMatches.length > 0 ? (
+                    playerLoadStats.slice(0, 20).map((entry) => (
+                      <div
+                        key={entry.player.id}
+                        className="grid gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
+                            #{entry.player.number} {entry.player.lastName}
+                          </p>
+                          <p className="text-xs text-white/52">{entry.player.firstName}</p>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2 text-center">
+                          <div
+                            className={clsx(
+                              "min-w-16 rounded-2xl border px-3 py-2",
+                              playerLoadSortMetric === "starts"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-white/10 bg-black/18",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Start</p>
+                            <p className="text-lg font-black text-white">{entry.starts}</p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "min-w-16 rounded-2xl border px-3 py-2",
+                              playerLoadSortMetric === "bench"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-white/10 bg-black/18",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Bänk</p>
+                            <p className="text-lg font-black text-white">{entry.bench}</p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "min-w-16 rounded-2xl border px-3 py-2",
+                              playerLoadSortMetric === "unavailable"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-white/10 bg-black/18",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Borta</p>
+                            <p className="text-lg font-black text-white">{entry.unavailable}</p>
+                          </div>
+                          <div
+                            className={clsx(
+                              "min-w-16 rounded-2xl border px-3 py-2",
+                              playerLoadSortMetric === "selectionRate"
+                                ? "border-emerald-300/45 bg-emerald-300/14"
+                                : "border-emerald-300/20 bg-emerald-300/10",
+                            )}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-white/40">Procent</p>
+                            <p className="text-lg font-black text-emerald-100">
+                              {Math.round(entry.selectionRate)}%
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="rounded-2xl border border-dashed border-white/12 px-4 py-4 text-sm text-white/45">
+                      Skapa matcher och placera spelare i startnia eller bänk för att se belastning.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[28px] border border-white/10 bg-black/18 p-5">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.22em] text-white/70">
+                      🏅 Topplista: {statsSortOption.label}
+                    </p>
+                    <p className="mt-2 text-sm text-white/56">
+                      Kompletterad med mål per uttagning och kort per match.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {STATS_SORT_OPTIONS.map((option) => {
+                      const isSelected = statsSortMetric === option.key;
+
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => setStatsSortMetric(option.key)}
+                          className={clsx(
+                            "rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition",
+                            isSelected
+                              ? "bg-emerald-300 text-slate-950"
+                              : "border border-white/10 bg-white/6 text-white/68 hover:bg-white/10",
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {statsLeaders.length > 0 ? (
+                    statsLeaders.slice(0, 20).map((entry, index) => (
                     <div
                       key={entry.player.id}
-                      className="grid gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center"
+                      className="grid gap-3 rounded-2xl border border-white/10 bg-white/6 px-4 py-3 sm:grid-cols-[48px_minmax(0,1fr)] sm:items-center"
                     >
                       <div className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-300/30 bg-emerald-300/10 text-sm font-black text-emerald-100">
                         {index + 1}
@@ -2228,10 +3007,12 @@ export function TeamManagerApp() {
                         <p className="text-sm font-black uppercase tracking-[0.08em] text-white">
                           #{entry.player.number} {entry.player.lastName}
                         </p>
-                        <p className="text-xs text-white/52">{entry.player.firstName}</p>
+                        <p className="text-xs text-white/52">
+                          {entry.player.firstName} • {entry.selectedMatches} uttagningar
+                        </p>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="grid grid-cols-5 gap-2 text-center sm:col-span-2">
                         <div
                           className={clsx(
                             "min-w-16 rounded-2xl border px-3 py-2",
@@ -2240,7 +3021,7 @@ export function TeamManagerApp() {
                               : "border-white/10 bg-black/18",
                           )}
                         >
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Mål</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">⚽ Mål</p>
                           <p className="text-lg font-black text-emerald-100">{entry.goals}</p>
                         </div>
                         <div
@@ -2251,7 +3032,7 @@ export function TeamManagerApp() {
                               : "border-white/10 bg-black/18",
                           )}
                         >
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Gula</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">🟨 Gula</p>
                           <p className="text-lg font-black text-amber-100">{entry.yellowCards}</p>
                         </div>
                         <div
@@ -2262,8 +3043,24 @@ export function TeamManagerApp() {
                               : "border-white/10 bg-black/18",
                           )}
                         >
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Röda</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">🟥 Röda</p>
                           <p className="text-lg font-black text-rose-100">{entry.redCards}</p>
+                        </div>
+                        <div className="min-w-16 rounded-2xl border border-white/10 bg-black/18 px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">⚽ Mål/ut</p>
+                          <p className="text-lg font-black text-white">
+                            {entry.selectedMatches > 0
+                              ? formatAverage(entry.goals / entry.selectedMatches)
+                              : "0,0"}
+                          </p>
+                        </div>
+                        <div className="min-w-16 rounded-2xl border border-white/10 bg-black/18 px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-white/45">Kort/m</p>
+                          <p className="text-lg font-black text-white">
+                            {statsMatches.length > 0
+                              ? formatAverage((entry.yellowCards + entry.redCards) / statsMatches.length)
+                              : "0,0"}
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -2273,6 +3070,7 @@ export function TeamManagerApp() {
                     Ingen statistik för {statsSortOption.valueLabel} i det här urvalet ännu.
                   </p>
                 )}
+                </div>
               </div>
             </div>
           </section>
@@ -2375,7 +3173,7 @@ export function TeamManagerApp() {
                               {match.opponentName}
                             </p>
                             <p className="mt-1 text-xs uppercase tracking-[0.18em] text-white/52">
-                              {formatShortDate(match.matchDate)} • {getMatchTypeShortLabel(match.matchType)} • {match.formationKey}
+                              {formatShortDate(match.matchDate)} • {getMatchTypeShortLabel(match.matchType)} • {getFormationLabel(match.formationKey)}
                             </p>
                             <p className="mt-2 text-sm text-white/62">{match.location}</p>
                           </div>
@@ -2419,9 +3217,9 @@ export function TeamManagerApp() {
               <Shield className="text-cyan-200" />
               <div>
                 <h2 className="text-lg font-black uppercase tracking-[0.12em] text-white">
-                  Whatsapp-export
+                  Matchkort
                 </h2>
-                <p className="text-sm text-white/60">Förhandsvisning av färdigt delningskort.</p>
+                <p className="text-sm text-white/60">Förhandsvisning av matchkortet.</p>
               </div>
             </div>
 
@@ -2441,7 +3239,6 @@ export function TeamManagerApp() {
                     match={selectedMatch}
                     starters={selectedMatchStarters}
                     bench={benchPlayers}
-                    unavailable={unavailablePlayers}
                     getPlayer={(playerId) => (playerId ? playerMap.get(playerId) : undefined)}
                   />
                 </div>
@@ -2460,7 +3257,7 @@ export function TeamManagerApp() {
 
             <div className="mt-4 rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm leading-6 text-white/62">
               {supabaseConfigured
-                ? "Laguppställningen synkas mot Supabase och exporten är anpassad för delning i Whatsapp."
+                ? "Laguppställningen synkas mot Supabase och exporten är anpassad för enkel delning."
                 : "Uppställningen sparas lokalt i webbläsaren i demo-läge."}
             </div>
           </section>
@@ -2474,7 +3271,6 @@ export function TeamManagerApp() {
             match={selectedMatch}
             starters={selectedMatchStarters}
             bench={benchPlayers}
-            unavailable={unavailablePlayers}
             getPlayer={(playerId) => (playerId ? playerMap.get(playerId) : undefined)}
           />
         </div>
